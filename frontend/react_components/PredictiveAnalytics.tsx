@@ -91,8 +91,31 @@ export const PredictiveAnalytics: React.FC<PredictiveProps> = ({
     });
   }, [stepIndex, trafficDrop, cityBBox, cityCenter]);
 
-  // Is red alert active? Trigger at +48 Hrs (stepIndex >= 3)
-  const isRedAlert = stepIndex >= 3;
+  // Live forecast state
+  const [forecastData, setForecastData] = useState<any>(null);
+
+  useEffect(() => {
+    fetch(`/api/forecast?city=${encodeURIComponent(cityName)}`)
+      .then((r) => r.json())
+      .then((data) => setForecastData(data))
+      .catch((err) => console.warn('React forecast fetch fallback:', err));
+  }, [cityName]);
+
+  const step = forecastData?.steps?.[stepIndex] || {
+    no2: 22.0,
+    pblh: 520,
+    wind_speed: 6.8,
+    level: 'normal',
+    alert: false,
+    badge: 'GOOD (Normal Dispersion)',
+    title: '🟢 Normal Air Quality Dispersion',
+    desc: 'Adequate atmospheric boundary layer ventilation. Concentrations within permissible limits.',
+  };
+
+  const effectiveNo2 = trafficDrop ? step.no2 * 0.6 : step.no2;
+  const isSevere = effectiveNo2 >= 75.0 || (effectiveNo2 >= 50.0 && step.pblh < 280.0 && step.wind_speed < 4.0);
+  const isMitigated = trafficDrop && step.alert && !isSevere;
+  const isAlert = isSevere;
 
   return (
     <div className="flex flex-1 min-h-0 bg-[#0e1116] text-[#dce4ee]">
@@ -139,7 +162,7 @@ export const PredictiveAnalytics: React.FC<PredictiveProps> = ({
             <div className="flex justify-between">
               <span className="text-[#8b98a9]">NO₂ Peak Mitigation:</span>
               <strong className={trafficDrop ? 'text-[#10b981]' : 'text-[#8b98a9]'}>
-                {trafficDrop ? '-14.8 µg/m³ peak cut' : '0.0 µg/m³'}
+                {trafficDrop ? `-${(step.no2 * 0.4).toFixed(1)} µg/m³ peak cut` : '0.0 µg/m³'}
               </strong>
             </div>
           </div>
@@ -149,17 +172,21 @@ export const PredictiveAnalytics: React.FC<PredictiveProps> = ({
         <section className="bg-[#1d242f] border border-[#2a3341] rounded-lg p-3 text-xs space-y-2">
           <h4 className="font-bold text-white uppercase text-[11px] tracking-wider">Atmospheric Diagnostics</h4>
           <div className="flex justify-between py-1 border-b border-white/5">
-            <span className="text-[#8b98a9]">Algorithm:</span>
-            <span className="text-[#35d0c0] font-semibold">XGBoost + Kriging</span>
+            <span className="text-[#8b98a9]">Forecast NO₂:</span>
+            <strong className="text-[#35d0c0] font-semibold">{effectiveNo2.toFixed(1)} µg/m³</strong>
           </div>
           <div className="flex justify-between py-1 border-b border-white/5">
-            <span className="text-[#8b98a9]">LOSO RMSE:</span>
-            <strong className="text-[#10b981] font-mono">4.12 µg/m³</strong>
+            <span className="text-[#8b98a9]">PBL Ventilation:</span>
+            <span className="text-white font-mono">{step.pblh.toFixed(0)} m</span>
+          </div>
+          <div className="flex justify-between py-1 border-b border-white/5">
+            <span className="text-[#8b98a9]">Surface Wind:</span>
+            <span className="text-white font-mono">{step.wind_speed.toFixed(1)} km/h</span>
           </div>
           <div className="flex justify-between py-1">
             <span className="text-[#8b98a9]">Stagnation Risk:</span>
-            <strong className={isRedAlert ? 'text-[#ef4444]' : 'text-[#35d0c0]'}>
-              {isRedAlert ? 'CRITICAL (GRAP Stage IV)' : 'Moderate (Normal)'}
+            <strong className={isAlert ? 'text-[#ef4444]' : isMitigated ? 'text-[#10b981]' : 'text-[#35d0c0]'}>
+              {isAlert ? 'CRITICAL (GRAP Stage IV)' : isMitigated ? 'MITIGATED (Under Control)' : step.badge}
             </strong>
           </div>
         </section>
@@ -173,22 +200,28 @@ export const PredictiveAnalytics: React.FC<PredictiveProps> = ({
           {/* Floating Red Alert Widget */}
           <div
             className={`absolute top-4 right-4 z-[1000] p-3 rounded-lg shadow-xl backdrop-blur-md max-w-sm flex items-center gap-3 transition-all duration-300 ${
-              isRedAlert
+              isAlert
                 ? 'bg-[#230a0f]/95 border-2 border-[#ef4444] shadow-[0_0_25px_rgba(239,68,68,0.65)] animate-pulse'
+                : isMitigated
+                ? 'bg-[#0f1f1a]/95 border-2 border-[#10b981] shadow-[0_0_20px_rgba(16,185,129,0.5)]'
                 : 'bg-[#0e1116]/90 border border-[#10b981]/40'
             }`}
           >
-            <span className="text-2xl">{isRedAlert ? '⚠️' : '🟢'}</span>
+            <span className="text-2xl">{isAlert ? '⚠️' : isMitigated ? '🛡️' : '🟢'}</span>
             <div>
-              <div className={`text-xs font-bold ${isRedAlert ? 'text-[#ff6b6b]' : 'text-white'}`}>
-                {isRedAlert
+              <div className={`text-xs font-bold ${isAlert ? 'text-[#ff6b6b]' : isMitigated ? 'text-[#10b981]' : 'text-white'}`}>
+                {isAlert
                   ? '⚠️ RED ALERT: High NO2 Stagnation. Trigger GRAP Protocols'
-                  : 'Normal Air Quality Dispersion'}
+                  : isMitigated
+                  ? '🛡️ Policy Intervened: Stagnation Averted'
+                  : step.title}
               </div>
-              <div className={`text-[11px] mt-0.5 ${isRedAlert ? 'text-[#fca5a5]' : 'text-[#8b98a9]'}`}>
-                {isRedAlert
-                  ? 'Severe atmospheric boundary layer collapse (<280m) & near-zero surface wind. Emergency restrictions advised.'
-                  : 'Adequate atmospheric boundary layer ventilation. Concentrations within permissible limits.'}
+              <div className={`text-[11px] mt-0.5 ${isAlert ? 'text-[#fca5a5]' : 'text-[#8b98a9]'}`}>
+                {isAlert
+                  ? `Severe atmospheric boundary layer collapse (<${step.pblh.toFixed(0)}m) & low wind (${step.wind_speed.toFixed(1)} km/h). Critical NO₂ (${effectiveNo2.toFixed(1)} µg/m³).`
+                  : isMitigated
+                  ? `40% Traffic Drop cut vehicular NO₂ by ${(step.no2 * 0.4).toFixed(1)} µg/m³, successfully averting emergency stagnation!`
+                  : step.desc}
               </div>
             </div>
           </div>

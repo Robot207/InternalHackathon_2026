@@ -173,29 +173,8 @@
                 <label><input type="checkbox" id="gridCoarse" checked /> 0.25° pixel edges</label>
                 <label><input type="checkbox" id="gridFine" checked /> 0.01° fine grid (right)</label>
               </div>
-              <div class="pane-ctrl" style="margin-left:auto;">
-                <button id="btnExposureToggle" class="btn-exposure-toggle" style="background:#1d242f; color:#dce4ee; border:1px solid #2a3341; padding:3px 8px; border-radius:4px; font-size:11px; cursor:pointer;">👥 Population Exposure: OFF</button>
-              </div>
             </div>
-            <div class="maps" style="position:relative;">
-              <div id="exposureCard" class="exposure-floating-card hidden" style="position:absolute; top:12px; right:15px; z-index:500; background:rgba(22,27,35,0.94); border:1px solid #35d0c0; border-radius:8px; padding:10px 12px; font-size:11px; width:260px; box-shadow:0 6px 16px rgba(0,0,0,0.5); pointer-events:auto;">
-                <div style="display:flex; justify-content:space-between; font-weight:700; margin-bottom:6px; border-bottom:1px solid rgba(255,255,255,0.1); padding-bottom:4px;">
-                  <span>👥 Population Exposure</span>
-                  <span id="expRiskBadge" style="background:rgba(255,180,84,0.2); color:#ffb454; padding:1px 6px; border-radius:4px; font-size:10px;">Moderate</span>
-                </div>
-                <div style="display:flex; justify-content:space-between; margin-bottom:4px;">
-                  <span style="color:#8b98a9;">Pop-Weighted NO₂:</span>
-                  <strong id="expWeightedVal" style="color:#35d0c0; font-size:13px;">-- µg/m³</strong>
-                </div>
-                <div style="display:flex; justify-content:space-between; margin-bottom:4px; color:#8b98a9;">
-                  <span>Spatial Mean:</span>
-                  <span id="expSpatialVal" style="color:#fff;">-- µg/m³</span>
-                </div>
-                <div style="display:flex; justify-content:space-between; color:#8b98a9;">
-                  <span>Exceedance (&gt;40 µg/m³):</span>
-                  <span id="expExceedVal" style="color:#ff6b6b; font-weight:600;">--</span>
-                </div>
-              </div>
+            <div class="maps">
               <div id="mapLeft" class="map"></div>
               <div id="mapRight" class="map"></div>
             </div>
@@ -266,10 +245,10 @@
               </div>
               <div class="predict-city-card">
                 <span class="p-sub">Target Region</span>
-                <strong id="predictCityDisplay" class="p-city">Nagpur, Maharashtra</strong>
-                <span class="p-coord">21.1458°N, 79.0882°E · Central India</span>
+                <strong id="predictCityDisplay" class="p-city">Mumbai, Maharashtra</strong>
+                <span id="predictCityCoord" class="p-coord">19.0760°N, 72.8777°E · Maharashtra</span>
               </div>
-              <p class="hint">Physics-informed spatiotemporal LightGBM/XGBoost forecasting coupled with planetary boundary layer height (PBLH) dynamics.</p>
+              <p class="hint">Physics-informed spatiotemporal LightGBM downscaling coupled with live ECMWF & CAMS boundary layer dynamics.</p>
             </div>
 
             <!-- What-If Simulator Panel -->
@@ -299,20 +278,28 @@
             <section class="panel">
               <h3>Atmospheric Diagnostics</h3>
               <div class="val-metric-row">
-                <span class="v-label">Active Model:</span>
-                <strong class="v-val text-accent">Spatial XGBoost + Kriging</strong>
+                <span class="v-label">Forecast NO₂:</span>
+                <strong id="forecastNo2Val" class="v-val text-score">-- µg/m³</strong>
               </div>
               <div class="val-metric-row">
-                <span class="v-label">Forecast Horizon:</span>
-                <span class="v-val">72 Hours Forward</span>
+                <span class="v-label">Surface Wind:</span>
+                <span id="forecastWindVal" class="v-val">-- km/h</span>
               </div>
               <div class="val-metric-row">
-                <span class="v-label">LOSO RMSE:</span>
-                <strong class="v-val text-score">4.12 µg/m³</strong>
+                <span class="v-label">Rel Humidity:</span>
+                <span id="forecastHumidityVal" class="v-val">-- %</span>
+              </div>
+              <div class="val-metric-row">
+                <span class="v-label">PBL Ventilation:</span>
+                <span id="forecastPblhVal" class="v-val">-- m</span>
+              </div>
+              <div class="val-metric-row">
+                <span class="v-label">Ventilation Coeff:</span>
+                <span id="forecastVcVal" class="v-val">-- m²/s</span>
               </div>
               <div class="val-metric-row">
                 <span class="v-label">Stagnation Risk:</span>
-                <span id="stagnationRisk" class="v-val text-accent">Moderate (Low Wind)</span>
+                <span id="stagnationRisk" class="v-val text-accent">Calculating...</span>
               </div>
             </section>
           </aside>

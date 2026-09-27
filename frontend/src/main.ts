@@ -31,9 +31,10 @@ let leftPane: Pane
 let rightPane: Pane
 let predictivePane: Pane | null = null
 let citiesData: import('./types').CityItem[] = []
-let activeCityId = 'nagpur'
+let activeCityId = 'mumbai'
 let predictStep = 0
 let trafficReductionActive = false
+let currentForecast: import('./types').ForecastResponse | null = null
 const PREDICT_LABELS = ['[Now] (0 Hours)', '[+12 Hrs]', '[+24 Hrs]', '[+48 Hrs]', '[+72 Hrs]']
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
@@ -770,31 +771,110 @@ function renderProbeChart(p: ProbeResponse): void {
   }
 }
 
-function updateRedAlertWidget(step: number): void {
+function updateForecastUI(): void {
+  if (!currentForecast || !currentForecast.steps || currentForecast.steps.length === 0) return
+
+  const cityDisp = $('predictCityDisplay')
+  if (cityDisp) cityDisp.textContent = currentForecast.city.name
+  const coordEl = $('predictCityCoord')
+  if (coordEl) coordEl.textContent = `${currentForecast.city.coords_formatted} · ${currentForecast.city.state}`
+
+  const stepData = currentForecast.steps[predictStep] || currentForecast.steps[0]
+  if (!stepData) return
+
+  const no2El = $('forecastNo2Val')
+  const windEl = $('forecastWindVal')
+  const rhEl = $('forecastHumidityVal')
+  const pblhEl = $('forecastPblhVal')
+  const vcEl = $('forecastVcVal')
+  const stag = $('stagnationRisk')
+
+  const effectiveNo2 = trafficReductionActive ? stepData.no2 * 0.6 : stepData.no2
+  if (no2El) {
+    no2El.textContent = `${effectiveNo2.toFixed(1)} µg/m³${trafficReductionActive ? ' (-40%)' : ''}`
+    no2El.style.color = effectiveNo2 >= 35.0 ? '#ef4444' : effectiveNo2 >= 25.0 ? '#f59e0b' : '#10b981'
+  }
+  if (windEl) windEl.textContent = `${stepData.wind_speed.toFixed(1)} km/h`
+  if (rhEl) rhEl.textContent = `${stepData.humidity ? stepData.humidity.toFixed(0) : '--'} %`
+  if (pblhEl) pblhEl.textContent = `${stepData.pblh.toFixed(0)} m`
+  const vc = stepData.ventilation_coeff || Math.round(stepData.pblh * (stepData.wind_speed / 3.6))
+  if (vcEl) vcEl.textContent = `${vc.toFixed(0)} m²/s`
+
   const widget = $('redAlertWidget')
   const icon = $('alertIcon')
   const title = $('alertTitle')
   const text = $('alertText')
-  const stag = $('stagnationRisk')
 
-  if (step >= 3) {
+  // Check if spatial downscaled map has red pixels (>= 35 µg/m³)
+  let mapHasRed = false
+  if (layers && layers.layers.prediction && layers.layers.prediction.length > 0) {
+    const fIdx = Math.min(predictStep * 3, layers.layers.prediction.length - 1)
+    const activeFrame = frameAt(layers.layers.prediction, fIdx)
+    if (activeFrame) {
+      for (const row of activeFrame) {
+        for (const v of row) {
+          if (v !== null && v >= 35.0) {
+            mapHasRed = true
+            break
+          }
+        }
+        if (mapHasRed) break
+      }
+    }
+  }
+
+  // Atmospheric factors stagnation detection:
+  // VC < 600 m2/s or PBLH < 250m with high humidity (> 70%) or near calm wind (< 6 km/h)
+  const isAtmosphericTrap = (vc < 600 || stepData.pblh < 250) && ((stepData.humidity || 0) > 70 || stepData.wind_speed < 6.0)
+  const isSevere = (!trafficReductionActive && mapHasRed) || stepData.alert || effectiveNo2 >= 35.0 || (effectiveNo2 >= 16.0 && isAtmosphericTrap)
+  const isModerate = effectiveNo2 >= 25.0 || (vc < 1800 && (stepData.humidity || 0) > 65.0)
+
+  if (isSevere) {
     widget.className = 'red-alert-widget danger'
     icon.textContent = '⚠️'
     title.textContent = '⚠️ RED ALERT: High NO2 Stagnation. Trigger GRAP Protocols'
-    text.textContent = 'Severe meteorological stagnation & low boundary layer ventilation (<280m). Critical stagnation predicted across arterial urban zones.'
+    text.textContent = `Severe atmospheric trapping: Wind: ${stepData.wind_speed.toFixed(1)} km/h, RH: ${stepData.humidity ? stepData.humidity.toFixed(0) : 85}%, PBLH: ${stepData.pblh.toFixed(0)}m (VC: ${vc.toFixed(0)} m²/s). Critical stagnation trapping NO₂ (${effectiveNo2.toFixed(1)} µg/m³) across urban corridors.`
     if (stag) {
       stag.textContent = 'CRITICAL (GRAP Stage IV)'
       stag.style.color = '#ef4444'
     }
+  } else if (trafficReductionActive && (stepData.alert || mapHasRed) && !isSevere) {
+    widget.className = 'red-alert-widget warning'
+    icon.textContent = '🛡️'
+    title.textContent = '🛡️ Policy Intervened: Stagnation Averted'
+    text.textContent = `40% Traffic Drop cut vehicular peak NO₂ by ${(stepData.no2 * 0.4).toFixed(1)} µg/m³ (from ${stepData.no2.toFixed(1)} to ${effectiveNo2.toFixed(1)} µg/m³), successfully averting emergency stagnation!`
+    if (stag) {
+      stag.textContent = 'MITIGATED (Policy Active)'
+      stag.style.color = '#10b981'
+    }
+  } else if (isModerate) {
+    widget.className = 'red-alert-widget warning'
+    icon.textContent = '🟡'
+    title.textContent = '🟡 Moderate Stagnation Advisory'
+    text.textContent = `Sub-optimal ventilation: Wind: ${stepData.wind_speed.toFixed(1)} km/h, RH: ${stepData.humidity ? stepData.humidity.toFixed(0) : 65}%, PBLH: ${stepData.pblh.toFixed(0)}m (VC: ${vc.toFixed(0)} m²/s). NO₂ elevated at ${effectiveNo2.toFixed(1)} µg/m³.`
+    if (stag) {
+      stag.textContent = 'MODERATE (Advisory)'
+      stag.style.color = '#f59e0b'
+    }
   } else {
     widget.className = 'red-alert-widget normal'
     icon.textContent = '🟢'
-    title.textContent = 'Normal Air Quality Dispersion'
-    text.textContent = 'Adequate planetary boundary layer ventilation (>650m). NO₂ concentrations within permissible limits.'
+    title.textContent = '🟢 Normal Air Quality Dispersion'
+    text.textContent = `Adequate boundary layer ventilation: Wind: ${stepData.wind_speed.toFixed(1)} km/h, RH: ${stepData.humidity ? stepData.humidity.toFixed(0) : 55}%, PBLH: ${stepData.pblh.toFixed(0)}m (VC: ${vc.toFixed(0)} m²/s). NO₂ at safe level (${effectiveNo2.toFixed(1)} µg/m³).`
     if (stag) {
-      stag.textContent = 'Moderate (Normal)'
+      stag.textContent = 'GOOD (Normal Dispersion)'
       stag.style.color = '#35d0c0'
     }
+  }
+}
+
+async function loadForecastForCity(cityId: string): Promise<void> {
+  try {
+    currentForecast = await api.forecast(cityId)
+    updateForecastUI()
+    if (predictivePane) renderPredictiveOverlay()
+  } catch (err) {
+    console.warn('Forecast fetch fallback:', err)
   }
 }
 
@@ -810,11 +890,15 @@ function renderPredictiveOverlay(): void {
   }
 
   if (frame) {
-    if (trafficReductionActive) {
-      frame = frame.map((row) => row.map((v) => (v !== null ? v * 0.6 : null)))
-    }
+    const stepData = currentForecast?.steps[predictStep]
+    const ratio = stepData ? Math.max(0.4, Math.min(2.5, stepData.scaled_ratio)) : 1.0
+    const trafficMult = trafficReductionActive ? 0.6 : 1.0
+
+    frame = frame.map((row) =>
+      row.map((v) => (v !== null ? v * ratio * trafficMult : null))
+    )
     const rs = { vmin: 10, vmax: 45, mode: 'seq' as const }
-    const opacity = trafficReductionActive ? 0.52 : (predictStep >= 3 ? 0.9 : 0.78)
+    const opacity = trafficReductionActive ? 0.58 : (stepData?.alert ? 0.90 : 0.75)
     const url = frameToUrl(frame, rs.vmin, rs.vmax, rs.mode)
     predictivePane.setOverlay(url, bounds, opacity)
   }
@@ -866,13 +950,16 @@ async function init(): Promise<void> {
       opt2.setAttribute('data-id', c.id)
       datalist.appendChild(opt2)
     }
-    const def = citiesData.find((c) => c.id === (cRes.default || 'nagpur')) || citiesData[0]
+    const def = citiesData.find((c) => c.id === 'mumbai') || citiesData.find((c) => c.id === (cRes.default || 'mumbai')) || citiesData[0]
     if (def) {
       const inp = $<HTMLInputElement>('cityInput')
       inp.value = `${def.name}, ${def.state}`
       activeCityId = def.id
       presetSel.value = def.id
       $('predictCityDisplay').textContent = `${def.name}, ${def.state}`
+      const coordEl = $('predictCityCoord')
+      if (coordEl) coordEl.textContent = `${def.center[0].toFixed(4)}°N, ${def.center[1].toFixed(4)}°E · ${def.state}`
+      void loadForecastForCity(def.id)
     }
   } catch (err) {
     console.warn('Cities load fallback:', err)
@@ -937,6 +1024,9 @@ async function init(): Promise<void> {
     activeCityId = matched.id
     presetSel.value = matched.id
     $('predictCityDisplay').textContent = `${matched.name}, ${matched.state || 'India'}`
+    const coordEl = $('predictCityCoord')
+    if (coordEl) coordEl.textContent = `${matched.center[0].toFixed(4)}°N, ${matched.center[1].toFixed(4)}°E · ${matched.state || 'India'}`
+    void loadForecastForCity(matched.id)
 
     const bounds = layerBoundsFor(matched.bbox)
     leftPane.fit(bounds)
@@ -1020,7 +1110,12 @@ async function init(): Promise<void> {
       else leftPane.fit(layerBoundsFor(config.presets[0].bbox))
     }
     predictivePane.map.invalidateSize()
-    renderPredictiveOverlay()
+    if (!currentForecast || currentForecast.city.id !== activeCityId) {
+      void loadForecastForCity(activeCityId)
+    } else {
+      updateForecastUI()
+      renderPredictiveOverlay()
+    }
   })
 
   // 72-Hour Timeline Slider on Page 2
@@ -1032,7 +1127,7 @@ async function init(): Promise<void> {
       const s = Number(el.getAttribute('data-step'))
       el.classList.toggle('active', s === predictStep)
     })
-    updateRedAlertWidget(predictStep)
+    updateForecastUI()
     renderPredictiveOverlay()
   })
 
@@ -1049,12 +1144,15 @@ async function init(): Promise<void> {
     trafficReductionActive = (ev.target as HTMLInputElement).checked
     const delta = $('simDelta')
     const red = $('simReduction')
+    const stepData = currentForecast?.steps[predictStep]
+    const baselineNo2 = stepData ? stepData.no2 : 35.0
+    const cutAmount = (baselineNo2 * 0.40).toFixed(1)
     if (trafficReductionActive) {
       delta.textContent = '-40.0% (Simulated)'
       delta.className = 'sim-val active'
-      red.textContent = '-14.8 µg/m³ peak cut'
+      red.textContent = `-${cutAmount} µg/m³ peak cut`
       red.className = 'sim-val active'
-      status('What-If Simulator: 40% traffic drop active (-14.8 µg/m³)')
+      status(`What-If Simulator: 40% traffic drop active (-${cutAmount} µg/m³)`)
     } else {
       delta.textContent = '0.0% (Baseline)'
       delta.className = 'sim-val neutral'
@@ -1062,56 +1160,40 @@ async function init(): Promise<void> {
       red.className = 'sim-val neutral'
       status('What-If Simulator: Baseline emissions restored')
     }
+    updateForecastUI()
     renderPredictiveOverlay()
   })
 
-  // Population Exposure Toggle handler
-  let exposureActive = false
-  const btnExp = $('btnExposureToggle')
-  const cardExp = $('exposureCard')
-  if (btnExp && cardExp) {
-    btnExp.addEventListener('click', async () => {
-      exposureActive = !exposureActive
-      btnExp.textContent = exposureActive ? '👥 Population Exposure: ON' : '👥 Population Exposure: OFF'
-      btnExp.style.background = exposureActive ? '#35d0c0' : '#1d242f'
-      btnExp.style.color = exposureActive ? '#0e1116' : '#dce4ee'
-      btnExp.style.fontWeight = exposureActive ? '700' : '400'
-      cardExp.classList.toggle('hidden', !exposureActive)
-      if (exposureActive) {
-        try {
-          const res = await fetch(`/api/exposure?hour=${timeIdx}`).then((r) => r.json())
-          if (res && res.pop_weighted_no2 !== undefined) {
-            $('expWeightedVal').textContent = `${res.pop_weighted_no2} µg/m³`
-            $('expSpatialVal').textContent = `${res.unweighted_mean_no2} µg/m³`
-            $('expExceedVal').textContent = `${res.exceedance_percent}% (${res.exceedance_population.toLocaleString()} pop)`
-            $('expRiskBadge').textContent = res.exposure_risk
-            $('expRiskBadge').style.color = res.exposure_risk === 'Severe' ? '#ff6b6b' : '#ffb454'
-          }
-        } catch (err) {
-          console.error('Exposure query failed:', err)
-        }
-      }
-    })
+  // Date range change listener
+  const onDateChange = () => {
+    const sDate = $<HTMLInputElement>('startDate').value
+    const eDate = $<HTMLInputElement>('endDate').value
+    status(`Date range selected: ${sDate} to ${eDate}. Click "Fetch coarse data" to download & downscale.`)
   }
+  $<HTMLInputElement>('startDate').addEventListener('change', onDateChange)
+  $<HTMLInputElement>('endDate').addEventListener('change', onDateChange)
 
-  $('btnFetch').addEventListener('click', () => {
-    const inputVal = ($('cityInput') as HTMLInputElement)?.value
-    if (inputVal && inputVal.trim()) {
-      void handleCitySelect(inputVal)
-      return
-    }
-    void runJob(
-      api.fetch({
-        preset: presetSel.value,
-        city: activeCityId,
-        fine_step: 0.01,
-        start_date: $<HTMLInputElement>('startDate').value,
-        end_date: $<HTMLInputElement>('endDate').value,
-        cloud_threshold: Number($<HTMLInputElement>('cloudThreshold').value) || 60,
-      }),
-      async () => {
-        await refreshState()
-        if (hasModel) {
+  // Fetch Coarse Data button handler (applies model and refreshes probe for the exact date selected)
+  $('btnFetch').addEventListener('click', async () => {
+    const sDate = $<HTMLInputElement>('startDate').value
+    const eDate = $<HTMLInputElement>('endDate').value
+    const matchedCity = citiesData.find((c) => c.id === activeCityId) || citiesData[0]
+    const cityName = matchedCity ? matchedCity.name : activeCityId
+
+    await showHighTechLoading(async () => {
+      status(`Fetching Sentinel-5P data for ${cityName} (${sDate} to ${eDate})...`)
+      await runJob(
+        api.fetch({
+          preset: activeCityId,
+          city: activeCityId,
+          fine_step: 0.01,
+          start_date: sDate,
+          end_date: eDate,
+          cloud_threshold: Number($<HTMLInputElement>('cloudThreshold').value) || 60,
+        }),
+        async () => {
+          await refreshState()
+          status(`Applying AI downscaling model for ${sDate} to ${eDate}...`)
           await runJob(
             api.apply({ conserve: $<HTMLInputElement>('conserve').checked }),
             async () => {
@@ -1125,24 +1207,17 @@ async function init(): Promise<void> {
               }
               renderOverlays()
               if (predictivePane) renderPredictiveOverlay()
-              status('AI downscaling complete ✓')
+              if (currentProbe) {
+                await handleProbe(currentProbe.query_lat, currentProbe.query_lon)
+              }
+              status(`Downscaled NO₂ density map ready for ${sDate} to ${eDate} ✓`)
             },
             'apply',
           )
-        } else {
-          await loadLayers()
-          if (summary) {
-            const b = layerBoundsFor(summary.bbox)
-            leftPane.fit(b)
-            rightPane.fit(b)
-            if (predictivePane) predictivePane.fit(b)
-          }
-          renderOverlays()
-          if (predictivePane) renderPredictiveOverlay()
-        }
-      },
-      'fetch',
-    )
+        },
+        'fetch',
+      )
+    })
   })
 
   $('btnTrain').addEventListener('click', () => {

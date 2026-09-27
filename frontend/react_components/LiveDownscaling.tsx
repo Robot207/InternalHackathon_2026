@@ -182,48 +182,7 @@ export const LiveDownscaling: React.FC<LiveDownscalingProps> = ({
               RIGHT · AI Downscaled Output (0.01° / 1km Hyper-Local)
             </span>
           </div>
-          <button
-            onClick={toggleExposure}
-            className={`px-2.5 py-1 text-xs rounded border transition-colors flex items-center gap-1.5 ${
-              exposureActive
-                ? 'bg-[#35d0c0] text-[#0e1116] font-bold border-[#35d0c0]'
-                : 'bg-[#1d242f] text-[#dce4ee] border-[#2a3341] hover:border-[#35d0c0]'
-            }`}
-            title="Multiply spatial NO2 by population density raster to calculate population exposure"
-          >
-            👥 Population Exposure {exposureActive ? 'ON' : 'OFF'}
-          </button>
         </div>
-
-        {/* Floating Population Exposure Metric Card */}
-        {exposureActive && exposureData && (
-          <div className="absolute top-12 right-4 z-[500] bg-[#161b23]/95 backdrop-blur border border-[#35d0c0]/40 rounded-lg p-3 shadow-xl text-xs w-72 space-y-2 pointer-events-auto">
-            <div className="flex items-center justify-between border-b border-white/10 pb-1.5">
-              <span className="font-bold text-white flex items-center gap-1">👥 Population Exposure Metric</span>
-              <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold ${
-                exposureData.exposure_risk === 'Severe' ? 'bg-[#ff6b6b]/20 text-[#ff6b6b]' : 'bg-[#ffb454]/20 text-[#ffb454]'
-              }`}>
-                {exposureData.exposure_risk}
-              </span>
-            </div>
-            <div className="flex justify-between items-center py-1">
-              <span className="text-[#8b98a9]">Pop-Weighted Mean NO₂:</span>
-              <span className="font-mono text-base font-bold text-[#35d0c0]">
-                {exposureData.pop_weighted_no2} µg/m³
-              </span>
-            </div>
-            <div className="flex justify-between items-center text-[11px] text-[#8b98a9]">
-              <span>Unweighted Spatial Mean:</span>
-              <span className="text-white">{exposureData.unweighted_mean_no2} µg/m³</span>
-            </div>
-            <div className="flex justify-between items-center text-[11px] text-[#8b98a9]">
-              <span>Exceedance (&gt; 40 µg/m³ WHO):</span>
-              <span className="text-[#ff6b6b] font-semibold">
-                {exposureData.exceedance_percent}% ({exposureData.exceedance_population.toLocaleString()} people)
-              </span>
-            </div>
-          </div>
-        )}
 
         <div className="flex-1 grid grid-cols-2 relative min-h-0">
           <div ref={mapLeftRef} className="w-full h-full border-r border-[#2a3341]" />

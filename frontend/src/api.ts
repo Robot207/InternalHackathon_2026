@@ -37,6 +37,8 @@ export const api = {
   job: (id: string) => request<Job>(`/api/jobs/${id}`),
   cities: () => request<{ default: string; count: number; cities: import('./types').CityItem[] }>('/api/cities'),
   validation: () => request<import('./types').ValidationPayload>('/api/validation'),
+  forecast: (city?: string) =>
+    request<import('./types').ForecastResponse>(`/api/forecast?city=${encodeURIComponent(city || '')}`),
   validateStations: (file: File) => {
     const form = new FormData()
     form.append('file', file)

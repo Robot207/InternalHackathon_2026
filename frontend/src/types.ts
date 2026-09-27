@@ -203,3 +203,38 @@ export interface StationResult {
   metrics: Metrics
   note: string
 }
+
+export interface ForecastStep {
+  step_index: number
+  step_hours: number
+  label: string
+  time: string
+  no2: number
+  pblh: number
+  wind_speed: number
+  humidity: number
+  temperature: number
+  ventilation_coeff: number
+  level: 'normal' | 'moderate' | 'critical'
+  alert: boolean
+  badge: string
+  title: string
+  desc: string
+  scaled_ratio: number
+}
+
+export interface ForecastResponse {
+  city: {
+    id: string
+    name: string
+    state: string
+    center: [number, number]
+    coords_formatted: string
+    bbox: [number, number, number, number]
+    zoom: number
+  }
+  source: string
+  timestamp_utc: string
+  steps: ForecastStep[]
+}
+
