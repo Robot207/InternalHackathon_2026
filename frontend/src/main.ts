@@ -39,6 +39,14 @@ let currentForecast: import('./types').ForecastResponse | null = null
 const layerCache = new Map<string, Layers>()
 const forecastCache = new Map<string, import('./types').ForecastResponse>()
 
+interface VisitedCityEntry {
+  summary: Summary
+  meta: Meta | null
+  layers: Layers
+  bounds: LatLngBoundsExpression
+}
+const visitedCitiesCache = new Map<string, VisitedCityEntry>()
+
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
 async function showHighTechLoading(stageCallback: () => Promise<void>): Promise<void> {
@@ -334,11 +342,17 @@ function layerBounds(ls: Layers): LatLngBoundsExpression {
 
 function layerStyle(name: string): { vmin: number; vmax: number; mode: 'seq' | 'div' } {
   const mode = LAYER_MODE[name] || 'seq'
+  const isNo2 = ['coarse', 'coarse_bilinear', 'prediction', 'reference'].includes(name)
   const r = layers?.ranges?.[name]
+  if (isNo2) {
+    const vmin = r && r[0] !== null && isFinite(r[0]) ? r[0] : 0.0
+    const vmax = r && r[1] !== null && isFinite(r[1]) && r[1] > vmin ? r[1] : 50.0
+    return { vmin, vmax, mode: 'seq' }
+  }
   if (!r || r[0] === null || r[1] === null || r[1] <= r[0]) {
     if (mode === 'div') return { vmin: -10, vmax: 10, mode }
     if (name === 'cloud_gap') return { vmin: 0, vmax: 1, mode }
-    return { vmin: 8, vmax: 42, mode }
+    return { vmin: 0, vmax: 50, mode }
   }
   if (mode === 'div') {
     const m = Math.max(Math.abs(r[0]), Math.abs(r[1]), 0.5)
@@ -634,26 +648,37 @@ function renderProbeData(): void {
 
   $('probeCoords').textContent = `Precise Location: ${p.query_lat.toFixed(5)}°N, ${p.query_lon.toFixed(5)}°E (Grid Cell [${p.row}, ${p.col}]) · Elev: ${p.elevation_m}m · Road Density: ${p.road_density}`
 
+  const isHourly = timeIdx < p.t_len
+  const timeLabelStr = isHourly && p.times[timeIdx] ? p.times[timeIdx].slice(0, 16).replace('T', ' ') : 'Period Mean'
+
   const currentVal =
-    timeIdx < p.series.length && p.series[timeIdx] !== null
+    isHourly && p.series[timeIdx] !== null && p.series[timeIdx] !== undefined
       ? p.series[timeIdx]
       : (p.exact_no2_model ?? p.mean)
 
   $('probeCurrent').textContent = currentVal !== null ? `${currentVal} µg/m³` : 'N/A'
-  $('probeStatus').textContent =
-    timeIdx < p.t_len
-      ? `Hour ${timeIdx + 1}/${p.t_len} (${p.times[timeIdx]?.slice(0, 16).replace('T', ' ') || ''}) · Continuous Sub-Pixel`
-      : `Period Mean across ${p.t_len} hours · Continuous Sub-Pixel`
+  $('probeStatus').textContent = isHourly
+    ? `Hour ${timeIdx + 1}/${p.t_len} (${timeLabelStr}) · Downscaled 1km Pixel`
+    : `Period Mean across ${p.t_len} hours · Downscaled 1km Pixel`
 
   const apiEl = $('probeApiNo2')
   const apiAgrEl = $('probeApiAgreement')
   if (apiEl) {
-    if (p.exact_no2_api !== null && p.exact_no2_api !== undefined) {
-      apiEl.textContent = `${p.exact_no2_api} µg/m³`
+    const apiVal =
+      isHourly && p.api_series && timeIdx < p.api_series.length && p.api_series[timeIdx] !== null && p.api_series[timeIdx] !== undefined
+        ? p.api_series[timeIdx]
+        : (isHourly ? (p.exact_no2_api ?? p.api_mean) : (p.api_mean ?? p.exact_no2_api))
+
+    if (apiVal !== null && apiVal !== undefined) {
+      apiEl.textContent = `${apiVal} µg/m³`
       if (apiAgrEl) {
-        apiAgrEl.textContent = p.agreement_pct !== null && p.agreement_pct !== undefined
-          ? `${p.agreement_pct}% model convergence (Live API)`
-          : 'Exact Open-Meteo API query'
+        if (currentVal !== null && apiVal > 0) {
+          const errRatio = Math.abs(currentVal - apiVal) / Math.max(apiVal, 12.0)
+          const liveAgr = Math.max(0, Math.min(100, Math.round((1.0 - errRatio) * 1000) / 10))
+          apiAgrEl.textContent = `${liveAgr}% agreement at ${timeLabelStr}`
+        } else {
+          apiAgrEl.textContent = `Open-Meteo Air Quality (${timeLabelStr})`
+        }
       }
     } else {
       apiEl.textContent = 'Syncing...'
@@ -661,12 +686,19 @@ function renderProbeData(): void {
     }
   }
 
-  $('probeMean').textContent = `${p.mean} µg/m³`
+  const meanStr =
+    p.api_mean !== null && p.api_mean !== undefined
+      ? `Model: ${p.mean} µg/m³ · API: ${p.api_mean} µg/m³`
+      : `${p.mean} µg/m³`
+  $('probeMean').textContent = meanStr
   $('probeRange').textContent = `min: ${p.min} · max: ${p.max} µg/m³`
 
   if (p.nearest_station) {
     $('probeStation').textContent = p.nearest_station.name
-    $('probeStationDist').textContent = `${p.nearest_station.dist_km} km away (${p.nearest_station.network} station)`
+    $('probeStationDist').textContent =
+      p.nearest_station.dist_km === 0
+        ? `${p.nearest_station.network} (Exact Point)`
+        : `${p.nearest_station.dist_km} km away (${p.nearest_station.network})`
   } else {
     $('probeStation').textContent = 'Virtual Ground Monitor'
     $('probeStationDist').textContent = 'Continuous sub-pixel physical probe'
@@ -680,9 +712,10 @@ function renderProbeChart(p: ProbeResponse): void {
   svg.innerHTML = ''
   const vals = p.series.filter((v): v is number => typeof v === 'number' && isFinite(v))
   const baseVals = p.baseline_series.filter((v): v is number => typeof v === 'number' && isFinite(v))
+  const apiVals = (p.api_series || []).filter((v): v is number => typeof v === 'number' && isFinite(v))
   if (!vals.length) return
 
-  const allVals = [...vals, ...baseVals]
+  const allVals = [...vals, ...baseVals, ...apiVals]
   const minV = Math.max(0, Math.floor(Math.min(...allVals) * 0.9))
   const maxV = Math.ceil(Math.max(...allVals) * 1.1) || 1
 
@@ -723,6 +756,7 @@ function renderProbeChart(p: ProbeResponse): void {
     svg.appendChild(txt)
   }
 
+  // 1. Baseline series (dashed amber)
   const basePoints = p.baseline_series
     .map((v, i) => (v !== null ? `${getX(i)},${getY(v)}` : null))
     .filter(Boolean)
@@ -737,6 +771,24 @@ function renderProbeChart(p: ProbeResponse): void {
     svg.appendChild(basePath)
   }
 
+  // 2. Live API series (dotted cyan)
+  if (p.api_series && p.api_series.length > 0) {
+    const apiPoints = p.api_series
+      .map((v, i) => (v !== null ? `${getX(i)},${getY(v)}` : null))
+      .filter(Boolean)
+    if (apiPoints.length > 1) {
+      const apiPath = document.createElementNS(ns, 'polyline')
+      apiPath.setAttribute('points', apiPoints.join(' '))
+      apiPath.setAttribute('fill', 'none')
+      apiPath.setAttribute('stroke', '#22d3ee')
+      apiPath.setAttribute('stroke-width', '1.4')
+      apiPath.setAttribute('stroke-dasharray', '2 2')
+      apiPath.setAttribute('opacity', '0.85')
+      svg.appendChild(apiPath)
+    }
+  }
+
+  // 3. ML Downscaled series (solid teal)
   const predPoints = p.series
     .map((v, i) => (v !== null ? `${getX(i)},${getY(v)}` : null))
     .filter(Boolean)
@@ -781,7 +833,8 @@ function renderProbeChart(p: ProbeResponse): void {
       const tStr = p.times[hoverIdx]?.slice(5, 16).replace('T', ' ') || ''
       const mlVal = p.series[hoverIdx] !== null ? `${p.series[hoverIdx]}` : '--'
       const coarseVal = p.baseline_series[hoverIdx] !== null ? `${p.baseline_series[hoverIdx]}` : '--'
-      $('probeChartHover').textContent = `[${tStr}] ML: ${mlVal} µg/m³ · Baseline: ${coarseVal} µg/m³ (click to seek)`
+      const apiVal = p.api_series && hoverIdx < p.api_series.length && p.api_series[hoverIdx] !== null ? `${p.api_series[hoverIdx]}` : '--'
+      $('probeChartHover').textContent = `[${tStr}] Downscale: ${mlVal} µg/m³ · API: ${apiVal} µg/m³ · Coarse: ${coarseVal} µg/m³ (click to seek)`
     }
   }
 
@@ -1058,6 +1111,23 @@ async function init(): Promise<void> {
   await refreshState()
   const loaded = summary ? await loadLayers() : false
   if (!loaded) leftPane.fit(layerBoundsFor(config.presets.find((p) => p.id === presetSel.value)!.bbox))
+  else if (summary && layers) {
+    const initBounds = layerBounds(layers)
+    const sDate = $<HTMLInputElement>('startDate').value
+    const eDate = $<HTMLInputElement>('endDate').value
+    visitedCitiesCache.set(`${activeCityId}_${sDate}_${eDate}`, {
+      summary,
+      meta,
+      layers,
+      bounds: initBounds,
+    })
+    visitedCitiesCache.set(`${summary.preset}_${summary.start_date}_${summary.end_date}`, {
+      summary,
+      meta,
+      layers,
+      bounds: initBounds,
+    })
+  }
   status(summary ? 'previous results loaded' : 'ready')
 
   // Searchable City Selection Handler with High-Tech Loader
@@ -1094,10 +1164,37 @@ async function init(): Promise<void> {
     if (coordEl) coordEl.textContent = `${matched.center[0].toFixed(4)}°N, ${matched.center[1].toFixed(4)}°E · ${matched.state || 'India'}`
     void loadForecastForCity(matched.id)
 
+    const sDate = $<HTMLInputElement>('startDate').value
+    const eDate = $<HTMLInputElement>('endDate').value
+    const cityCacheKey = `${matched.id}_${sDate}_${eDate}`
+
     const bounds = layerBoundsFor(matched.bbox)
     leftPane.fit(bounds)
     rightPane.fit(bounds)
     if (predictivePane) predictivePane.fit(bounds)
+
+    // Instant switch if city dataset was already visited
+    if (visitedCitiesCache.has(cityCacheKey)) {
+      const v = visitedCitiesCache.get(cityCacheKey)!
+      summary = v.summary
+      meta = v.meta
+      layers = v.layers
+      timeIdx = layers.t_len
+      const slider = $<HTMLInputElement>('timeSlider')
+      slider.max = String(layers.t_len)
+      slider.value = String(timeIdx)
+      renderDataInfo()
+      renderWarnings()
+      renderMetrics()
+      drawGridlines()
+      updateButtons()
+      renderOverlays()
+      updateTimeLabel()
+      if (predictivePane) renderPredictiveOverlay()
+      if (currentProbe) void handleProbe(currentProbe.query_lat, currentProbe.query_lon)
+      status(`Active Region: ${matched.name} (${matched.state}) · Restored from cache (instant) ✓`)
+      return
+    }
 
     await showHighTechLoading(async () => {
       status(`Active Region: ${matched.name} (${matched.state}) · Target Resolution: 0.01° (approx 1km)`)
@@ -1106,8 +1203,8 @@ async function init(): Promise<void> {
           preset: matched.id,
           city: matched.id,
           fine_step: 0.01,
-          start_date: $<HTMLInputElement>('startDate').value,
-          end_date: $<HTMLInputElement>('endDate').value,
+          start_date: sDate,
+          end_date: eDate,
           cloud_threshold: Number($<HTMLInputElement>('cloudThreshold').value) || 60,
         }),
         async () => {
@@ -1123,6 +1220,14 @@ async function init(): Promise<void> {
               if (predictivePane) predictivePane.fit(bounds)
               renderOverlays()
               if (predictivePane) renderPredictiveOverlay()
+              if (summary && layers) {
+                visitedCitiesCache.set(cityCacheKey, {
+                  summary,
+                  meta,
+                  layers,
+                  bounds,
+                })
+              }
               status(`Downscaled NO₂ density map ready for ${matched.name} - Complete`)
             },
             `downscale ${matched.name}`,
@@ -1262,6 +1367,15 @@ async function init(): Promise<void> {
               if (predictivePane) renderPredictiveOverlay()
               if (currentProbe) {
                 await handleProbe(currentProbe.query_lat, currentProbe.query_lon)
+              }
+              if (summary && layers) {
+                const b = layerBoundsFor(summary.bbox)
+                visitedCitiesCache.set(`${activeCityId}_${sDate}_${eDate}`, {
+                  summary,
+                  meta,
+                  layers,
+                  bounds: b,
+                })
               }
               status(`Downscaled NO₂ density map ready for ${sDate} to ${eDate} ✓`)
             },

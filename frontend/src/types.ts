@@ -141,6 +141,10 @@ export interface ProbeResponse {
   is_precise?: boolean
   exact_no2_model?: number
   exact_no2_api?: number | null
+  api_series?: (number | null)[] | null
+  api_mean?: number | null
+  api_min?: number | null
+  api_max?: number | null
   api_source?: string
   agreement_pct?: number | null
 }

@@ -279,7 +279,7 @@ def _fetch_roads_overpass(
     w = len(lons)
     lat_min, lon_min, lat_max, lon_max = bbox
     query = (
-        "[out:json][timeout:8];"
+        "[out:json][timeout:2];"
         'way["highway"~"^(motorway|trunk|primary|secondary)$"]'
         f"({lat_min},{lon_min},{lat_max},{lon_max});"
         "out center;"
@@ -287,9 +287,9 @@ def _fetch_roads_overpass(
     payload = None
     if progress:
         progress(0.74, "fetching OSM road network")
-    for url in OVERPASS_URLS:
+    for url in OVERPASS_URLS[:1]:
         try:
-            payload = _post(url, {"data": query}, tries=1, timeout=8.0)
+            payload = _post(url, {"data": query}, tries=1, timeout=1.5)
             if payload and "elements" in payload:
                 break
         except Exception:

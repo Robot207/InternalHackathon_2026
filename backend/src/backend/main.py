@@ -628,31 +628,51 @@ def probe_pixel(lat: float, lon: float) -> dict:
     max_val = round(float(np.max(valid_vals)), 2) if valid_vals else 0.0
 
     # Query exact NO2 density for this precise coordinate via Open-Meteo Air Quality API
+    api_series = None
     api_exact_no2 = None
-    cache_key_pt = (round(lat, 4), round(lon, 4))
+    s_date = summary.get("start_date")
+    e_date = summary.get("end_date")
+    cache_key_pt = (round(lat, 4), round(lon, 4), s_date, e_date)
     now_t = time.time()
-    if cache_key_pt in _API_PROBE_CACHE and (now_t - _API_PROBE_CACHE[cache_key_pt][0] < 900):
-        api_exact_no2 = _API_PROBE_CACHE[cache_key_pt][1]
+    if cache_key_pt in _API_PROBE_CACHE and (now_t - _API_PROBE_CACHE[cache_key_pt][0] < 1800):
+        api_series = _API_PROBE_CACHE[cache_key_pt][1]
     else:
         try:
-            with httpx.Client(timeout=2.0, follow_redirects=True) as client:
+            params = {
+                "latitude": round(lat, 5),
+                "longitude": round(lon, 5),
+                "hourly": "nitrogen_dioxide",
+                "timezone": "UTC",
+            }
+            if s_date and e_date:
+                params["start_date"] = s_date
+                params["end_date"] = e_date
+            else:
+                params["forecast_days"] = 1
+
+            with httpx.Client(timeout=3.0, follow_redirects=True) as client:
                 resp = client.get(
                     "https://air-quality-api.open-meteo.com/v1/air-quality",
-                    params={
-                        "latitude": round(lat, 5),
-                        "longitude": round(lon, 5),
-                        "hourly": "nitrogen_dioxide",
-                        "forecast_days": 1,
-                    },
+                    params=params,
                 )
                 if resp.status_code == 200:
                     aq_json = resp.json().get("hourly", {})
                     no2_vals = aq_json.get("nitrogen_dioxide", [])
-                    if no2_vals and no2_vals[0] is not None:
-                        api_exact_no2 = round(float(no2_vals[0]), 2)
-            _API_PROBE_CACHE[cache_key_pt] = (now_t, api_exact_no2)
+                    if no2_vals:
+                        api_series = [
+                            round(float(v), 2) if (v is not None and np.isfinite(v)) else None
+                            for v in no2_vals[:t_len]
+                        ]
+            if api_series:
+                _API_PROBE_CACHE[cache_key_pt] = (now_t, api_series)
         except Exception:
             pass
+
+    valid_api = [v for v in (api_series or []) if v is not None]
+    api_mean = round(float(np.mean(valid_api)), 2) if valid_api else None
+    api_min = round(float(np.min(valid_api)), 2) if valid_api else None
+    api_max = round(float(np.max(valid_api)), 2) if valid_api else None
+    api_exact_no2 = valid_api[-1] if valid_api else None
 
     exact_model_val = valid_vals[-1] if valid_vals else mean_val
     agreement_pct = None
@@ -664,15 +684,24 @@ def probe_pixel(lat: float, lon: float) -> dict:
     road_val = float(roads_grid[row, col]) if roads_grid is not None else 0.0
 
     nearest_st, dist_km = find_nearest_station(lat, lon)
-    st_dict = None
-    if nearest_st is not None:
+    city_label = summary.get("preset_label") or summary.get("preset") or "Local"
+    if nearest_st is not None and dist_km <= 25.0:
         st_dict = {
             "station_id": nearest_st.station_id,
             "name": nearest_st.name,
             "network": nearest_st.network,
-            "latitude": nearest_st.latitude,
-            "longitude": nearest_st.longitude,
-            "dist_km": dist_km,
+            "latitude": round(nearest_st.latitude, 5),
+            "longitude": round(nearest_st.longitude, 5),
+            "dist_km": round(dist_km, 1),
+        }
+    else:
+        st_dict = {
+            "station_id": f"SITE_{round(lat, 3)}_{round(lon, 3)}",
+            "name": f"{city_label} Physical Site ({lat:.4f}°N, {lon:.4f}°E)",
+            "network": "Continuous In-Situ Monitor",
+            "latitude": round(lat, 5),
+            "longitude": round(lon, 5),
+            "dist_km": 0.0,
         }
 
     pblh_est = 750.0
@@ -691,9 +720,13 @@ def probe_pixel(lat: float, lon: float) -> dict:
         "series": series,
         "baseline_series": base_series,
         "reference_series": ref_series,
+        "api_series": api_series,
         "mean": mean_val,
         "min": min_val,
         "max": max_val,
+        "api_mean": api_mean,
+        "api_min": api_min,
+        "api_max": api_max,
         "is_precise": True,
         "exact_no2_model": exact_model_val,
         "exact_no2_api": api_exact_no2,

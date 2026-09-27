@@ -89,25 +89,30 @@ def build_layers(summary: dict) -> dict:
         "cloud_gap": gap_blocks,
     }
     ranges = {}
+    no2_layer_names = ["prediction", "reference", "coarse", "coarse_bilinear"]
+    finite_no2_chunks = [raw[k][np.isfinite(raw[k])] for k in no2_layer_names if k in raw]
+    all_no2 = np.concatenate(finite_no2_chunks) if finite_no2_chunks else np.array([25.0])
+    p98_shared = float(np.percentile(all_no2, 98)) if len(all_no2) > 0 else 45.0
+    no2_vmax = max(50.0, float(np.ceil(p98_shared / 5.0) * 5.0))
+
     for name, arr in raw.items():
+        if name in no2_layer_names:
+            ranges[name] = [0.0, round(no2_vmax, 1)]
+            continue
+        if name == "cloud_gap":
+            ranges[name] = [0.0, 1.0]
+            continue
         finite = arr[np.isfinite(arr)]
         if len(finite) == 0:
-            if name == "residual":
-                ranges[name] = [-5.0, 5.0]
-            elif name == "cloud_gap":
-                ranges[name] = [0.0, 1.0]
-            else:
-                ranges[name] = [8.0, 42.0]
+            ranges[name] = [-10.0, 10.0] if name == "residual" else [0.0, 50.0]
             continue
         p2 = float(np.percentile(finite, 2))
         p98 = float(np.percentile(finite, 98))
-        if p98 - p2 < 1.0:
-            p2 = max(0.0, p2 - 4.0)
-            p98 = p98 + 8.0
-        ranges[name] = [
-            round(p2, 3),
-            round(p98, 3),
-        ]
+        if name == "residual":
+            m = max(abs(p2), abs(p98), 2.0)
+            ranges[name] = [round(-m, 2), round(m, 2)]
+        else:
+            ranges[name] = [round(p2, 3), round(p98, 3)]
     layers = {name: _round(arr) for name, arr in raw.items()}
     lats = np.asarray(summary["lats"], dtype=float)
     lons = np.asarray(summary["lons"], dtype=float)
