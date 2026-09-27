@@ -347,7 +347,8 @@ function layerStyle(name: string): { vmin: number; vmax: number; mode: 'seq' | '
   const r = layers?.ranges?.[name]
   if (isNo2) {
     const vmin = r && r[0] !== null && isFinite(r[0]) ? r[0] : 0.0
-    const vmax = r && r[1] !== null && isFinite(r[1]) && r[1] > vmin ? r[1] : 50.0
+    const rawVmax = r && r[1] !== null && isFinite(r[1]) ? r[1] : 50.0
+    const vmax = Math.max(45.0, Math.ceil(rawVmax / 5.0) * 5.0)
     return { vmin, vmax, mode: 'seq' }
   }
   if (!r || r[0] === null || r[1] === null || r[1] <= r[0]) {
@@ -673,15 +674,6 @@ function renderProbeData(): void {
 
   const ls = layerStyle('prediction')
 
-  // Show/Hide Global Action button if probe is outside active box
-  const globalActionEl = $('probeGlobalAction')
-  if (globalActionEl) {
-    if (p.is_outside_region) {
-      globalActionEl.classList.remove('hidden')
-    } else {
-      globalActionEl.classList.add('hidden')
-    }
-  }
 
   // 1. Exact Downscaled NO2 & Pixel Color
   $('probeCurrent').textContent = currentVal !== null ? `${currentVal} µg/m³` : 'N/A'
@@ -799,10 +791,10 @@ function renderProbeChart(p: ProbeResponse): void {
   const minV = Math.max(0, Math.floor(Math.min(...allVals) * 0.9))
   const maxV = Math.ceil(Math.max(...allVals) * 1.1) || 1
 
-  const W = 700
-  const H = 90
+  const W = 900
+  const H = 95
   const padL = 36
-  const padR = 14
+  const padR = 16
   const padT = 10
   const padB = 18
   const chartW = W - padL - padR
@@ -1294,8 +1286,10 @@ async function init(): Promise<void> {
     }
     activeCityId = matched.id
     presetSel.value = matched.id
-    cityInput.value = `${matched.name}, ${matched.state || 'India'}`
-    $('predictCityDisplay').textContent = `${matched.name}, ${matched.state || 'India'}`
+    const statePart = matched.state || 'India'
+    const fullCityName = matched.name.toLowerCase().includes(statePart.toLowerCase()) ? matched.name : `${matched.name}, ${statePart}`
+    cityInput.value = fullCityName
+    $('predictCityDisplay').textContent = fullCityName
     const coordEl = $('predictCityCoord')
     if (coordEl) coordEl.textContent = `${matched.center[0].toFixed(4)}°N, ${matched.center[1].toFixed(4)}°E · ${matched.state || 'India'}`
     void loadForecastForCity(matched.id)
@@ -1504,6 +1498,8 @@ async function init(): Promise<void> {
               if (predictivePane) renderPredictiveOverlay()
               if (currentProbe) {
                 await handleProbe(currentProbe.query_lat, currentProbe.query_lon)
+              } else if (matchedCity) {
+                await handleProbe(matchedCity.center[0], matchedCity.center[1])
               }
               if (summary && layers) {
                 const b = layerBoundsFor(summary.bbox)

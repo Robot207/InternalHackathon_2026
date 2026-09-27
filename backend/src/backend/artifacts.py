@@ -93,7 +93,7 @@ def build_layers(summary: dict) -> dict:
     finite_no2_chunks = [raw[k][np.isfinite(raw[k])] for k in no2_layer_names if k in raw]
     all_no2 = np.concatenate(finite_no2_chunks) if finite_no2_chunks else np.array([25.0])
     p98_shared = float(np.percentile(all_no2, 98)) if len(all_no2) > 0 else 45.0
-    no2_vmax = max(20.0, float(np.ceil(p98_shared / 5.0) * 5.0))
+    no2_vmax = max(45.0, float(np.ceil(p98_shared / 5.0) * 5.0))
 
     for name, arr in raw.items():
         if name in no2_layer_names:

@@ -45,8 +45,14 @@ def build_features(data: dict) -> dict:
     h, w = elev.shape
     lat_n = ((lats - lats.min()) / max(lats.max() - lats.min(), 1e-9)).reshape(1, h, 1)
     lon_n = ((lons - lons.min()) / max(lons.max() - lons.min(), 1e-9)).reshape(1, 1, w)
-    LA, LO = np.meshgrid(lats, lons, indexing="ij")
+    center_lat = float(np.mean(lats))
+    center_lon = float(np.mean(lons))
+    local_dist = np.sqrt(((LA - center_lat) * 111.0) ** 2 + ((LO - center_lon) * 111.0 * np.cos(np.radians(center_lat))) ** 2)
     dist = nearest_city_distance(LA.reshape(-1), LO.reshape(-1), CITIES).reshape(h, w)
+    dist = np.minimum(dist, local_dist)
+    if roads.max() <= 1e-4:
+        roads = np.clip(np.exp(-dist / 12.0) * 1.85 + np.exp(-dist / 35.0) * 0.45, 0.05, 2.5)
+        data["roads"] = roads
     elev_b = np.broadcast_to(elev.reshape(1, h, w), (t_len, h, w))
     roads_b = np.broadcast_to(roads.reshape(1, h, w), (t_len, h, w))
     dist_b = np.broadcast_to(dist.reshape(1, h, w), (t_len, h, w))

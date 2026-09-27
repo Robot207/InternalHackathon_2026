@@ -84,7 +84,7 @@
               <h3>1 · Satellite Data &amp; City Selection</h3>
               <label class="field">Target City (100+ Indian Cities)
                 <div class="search-input-wrap">
-                  <input type="text" id="cityInput" list="citiesList" placeholder="Search Indian City (Default: Nagpur)..." autocomplete="off" />
+                  <input type="text" id="cityInput" list="citiesList" placeholder="Search any City or Region (e.g. Hyderabad, Mumbai, Delhi, London)..." autocomplete="off" />
                   <datalist id="citiesList"></datalist>
                   <select id="preset" class="hidden-select"></select>
                 </div>
@@ -174,8 +174,8 @@
               </div>
               <div class="pane-ctrl grid-ctrl" title="Draw cell boundaries on both maps">
                 <span class="pane-dot grid"></span> gridlines
-                <label><input type="checkbox" id="gridCoarse" checked /> 0.25° pixel edges</label>
-                <label><input type="checkbox" id="gridFine" checked /> 0.01° fine grid (right)</label>
+                <label><input type="checkbox" id="gridCoarse" /> 0.25° pixel edges</label>
+                <label><input type="checkbox" id="gridFine" /> 0.01° fine grid (right)</label>
               </div>
               <div id="livePixelInspector" class="pane-ctrl pixel-inspect-ctrl" title="Hover over map to inspect pixel color" style="flex: 0 0 auto; display: flex; align-items: center; gap: 6px; font-family: Consolas, monospace; font-size: 11px; background: rgba(0,0,0,0.35); padding: 3px 8px; border-radius: 4px; border: 1px solid var(--border);">
                 <span id="inspectSwatch" style="width: 12px; height: 12px; border-radius: 2px; border: 1px solid rgba(255,255,255,0.4); display: inline-block; background: #35d0c0;"></span>
@@ -234,16 +234,12 @@
                     <div id="probeRange" style="font-size:10px; color:#8b98a9; margin-top:2px;">min: -- · max: --</div>
                   </div>
                 </div>
-                <div id="probeGlobalAction" class="hidden" style="margin: 8px 0; padding: 8px 12px; background: rgba(53, 208, 192, 0.12); border: 1px solid rgba(53, 208, 192, 0.35); border-radius: 6px; display: flex; align-items: center; justify-content: space-between; gap: 10px;">
-                  <span style="font-size: 11.5px; color: #dce4ee;">Probed outside active box. Map satellite &amp; 1km downscaled pixels for this location?</span>
-                  <button id="btnDownscaleProbeRegion" class="btn btn-sm btn-primary" style="padding: 4px 12px; font-size: 11.5px; white-space: nowrap; font-weight: 600;">Downscale &amp; Render Map</button>
-                </div>
                 <div class="probe-chart-container">
                   <div class="probe-chart-header">
-                    <span>Historical Hourly Time-Series (1km Downscaled Pixel)</span>
+                    <span style="font-weight:600; color:#dce4ee;">Historical Hourly Time-Series (Continuous 1km Downscaled Pixel)</span>
                     <span id="probeChartHover" class="probe-chart-hover">Hover over chart to inspect</span>
                   </div>
-                  <svg id="probeChart" class="probe-svg" viewBox="0 0 700 110" preserveAspectRatio="none"></svg>
+                  <svg id="probeChart" class="probe-svg" viewBox="0 0 900 100" preserveAspectRatio="none"></svg>
                 </div>
               </div>
             </div>
