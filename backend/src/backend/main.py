@@ -229,12 +229,22 @@ def result_meta() -> dict:
 
 @app.get("/api/result/layers")
 def result_layers() -> FileResponse:
-    if not artifacts.has_predictions() or STATE.get("summary") is None:
+    summary = STATE.get("summary")
+    if not artifacts.has_predictions() or summary is None:
         raise HTTPException(404, "no prediction layers yet")
+    # The UI frames the map on whatever grid comes back from here. Handing out
+    # the previous run's file while another city is active teleports the view
+    # back to that city, so only serve layers produced for the active dataset.
+    meta = artifacts.read_meta()
+    if not meta or meta.get("summary_key") != summary.get("key"):
+        raise HTTPException(
+            404,
+            "prediction layers belong to a previous dataset — run Apply for the active city first",
+        )
     path = artifacts.layers_file()
     pred_path = artifacts.latest_dir() / "predictions.npz"
     if not path.exists() or path.stat().st_mtime < pred_path.stat().st_mtime:
-        artifacts.write_layers(STATE["summary"])
+        artifacts.write_layers(summary)
     return FileResponse(path, media_type="application/json")
 
 

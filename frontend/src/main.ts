@@ -76,12 +76,15 @@ async function runJob(
 }
 
 function updateButtons(): void {
+  // Applying/training while another city is selected would run the backend on
+  // the previous dataset and then drag the map back to it — block it instead.
+  const mismatch = !!summary && !selectionMatchesResults()
   $<HTMLButtonElement>('btnFetch').disabled = jobRunning
-  $<HTMLButtonElement>('btnTrain').disabled = jobRunning || !summary || !summary.has_reference
-  $<HTMLButtonElement>('btnApply').disabled = jobRunning || !summary || !hasModel
+  $<HTMLButtonElement>('btnTrain').disabled = jobRunning || !summary || !summary.has_reference || mismatch
+  $<HTMLButtonElement>('btnApply').disabled = jobRunning || !summary || !hasModel || mismatch
   const btnArena = document.getElementById('btnArena') as HTMLButtonElement | null
   if (btnArena) {
-    btnArena.disabled = jobRunning || !summary || !summary.has_reference
+    btnArena.disabled = jobRunning || !summary || !summary.has_reference || mismatch
   }
   const btnMumbai = document.getElementById('btnMumbaiStations') as HTMLButtonElement | null
   if (btnMumbai) {
@@ -121,8 +124,17 @@ function renderWarnings(): void {
   if (summary) {
     for (const w of summary.warnings || []) msgs.push(w)
     if (meta && meta.summary_key && meta.summary_key !== summary.key) {
-      msgs.push('current results belong to a previous dataset — retrain for the loaded one')
+      msgs.push('model results are from a previous dataset — run Apply/Train for the loaded one')
     }
+  }
+  // The dropdown and the backend's active dataset can disagree (the city was
+  // changed after fetching, or the fetch for it failed). Say so plainly and
+  // point at the action that reconciles them instead of silently snapping back.
+  const selected = activePreset()
+  if (summary && selected && summary.preset !== selected.id) {
+    msgs.push(
+      `active dataset is <b>${summary.preset_label || summary.preset}</b> — run <b>⬇ Fetch coarse data</b> for <b>${selected.label}</b> before Apply/Train`,
+    )
   }
   if (meta) {
     for (const w of meta.warnings || []) if (!msgs.includes(w)) msgs.push(w)
@@ -262,7 +274,13 @@ function layerStyle(name: string): { vmin: number; vmax: number; mode: 'seq' | '
 }
 
 function renderOverlays(): void {
-  if (!layers) return
+  // Never paint a grid that belongs to another city: it is drawn at that
+  // city's bounds, so it reads as "the map went back" as soon as you pan.
+  if (!layers || !selectionMatchesResults()) {
+    clearOverlays()
+    clearLegend()
+    return
+  }
   const bounds = layerBounds(layers)
   const leftName = ($('layerLeft') as HTMLSelectElement).value
   const rightName = ($('layerRight') as HTMLSelectElement).value
@@ -272,6 +290,13 @@ function renderOverlays(): void {
   rightPane.setOverlay(frameToUrl(frameAt(layers.layers[rightName], timeIdx), rs.vmin, rs.vmax, rs.mode), bounds, rightName === 'residual' ? 0.8 : 0.75)
   drawLegend(rs)
   updateLegendLabels(rs)
+}
+
+/** Blank the colour ramp when there is no data to show for this city. */
+function clearLegend(): void {
+  const canvas = $<HTMLCanvasElement>('legendCanvas')
+  canvas.getContext('2d')?.clearRect(0, 0, canvas.width, canvas.height)
+  $('legendLabels').textContent = ''
 }
 
 function drawLegend(style: { vmin: number; vmax: number; mode: 'seq' | 'div' }): void {
@@ -434,7 +459,9 @@ async function loadLayers(): Promise<boolean> {
     const slider = $<HTMLInputElement>('timeSlider')
     slider.max = String(layers.t_len)
     slider.value = String(timeIdx)
-    leftPane.fit(layerBounds(layers))
+    // Frame the selected city, not the raw grid: when the fetched grid belongs
+    // to a different city (job racing a city switch) the fit must stay put.
+    frameSelectedCity()
     renderOverlays()
     updateTimeLabel()
     renderMetrics()
@@ -445,17 +472,25 @@ async function loadLayers(): Promise<boolean> {
     return true
   } catch {
     layers = null
+    // No layers for this city: remove the previous city's pixels instead of
+    // leaving them under the newly framed view.
+    clearOverlays()
+    updateTimeLabel()
+    renderMetrics()
     return false
   }
 }
 
-async function refreshState(): Promise<void> {
+async function refreshState(syncCity = false): Promise<void> {
   const st = await api.state()
   summary = st.summary
   meta = st.meta
   hasModel = st.has_model
   const s = summary
-  if (s) {
+  // Only the initial load adopts the backend's city. After that the dropdown
+  // follows the user: re-syncing it here silently snapped the selection (and,
+  // through Apply, the map) back to the previously fetched city.
+  if (s && syncCity) {
     const sel = $<HTMLSelectElement>('preset')
     if (Array.from(sel.options).some((o) => o.value === s.preset)) {
       sel.value = s.preset
@@ -478,6 +513,11 @@ function setPresetDefaults(): void {
   // Always frame the newly selected city: loaded results may belong to a
   // different domain, and leaving the map on the old one looks broken.
   leftPane.fit(bounds)
+  // Repaint with whatever belongs to this city (drops a foreign grid) and
+  // refresh the mismatch warning/buttons straight away.
+  renderOverlays()
+  renderWarnings()
+  updateButtons()
   // Page 2 must follow the same city: drop the previous projection, re-frame
   // its map (refreshForecast only fits once it has pixels) and refetch the met.
   resetForecast()
@@ -496,6 +536,40 @@ function layerBoundsFor(bbox: number[]): LatLngBoundsExpression {
 function activePreset(): Preset | null {
   const id = $<HTMLSelectElement>('preset').value
   return config?.presets.find((p) => p.id === id) ?? null
+}
+
+/**
+ * True when the loaded analysis belongs to the city that is selected right now.
+ *
+ * The two can drift apart: picking a city only reframes the map, while the
+ * backend keeps serving whatever dataset was fetched/applied last (and a job
+ * started before a city switch finishes against the old one). Anything that
+ * paints or frames the map must go through this so a stale grid can never
+ * pull the view back to the previously analysed city.
+ */
+function selectionMatchesResults(): boolean {
+  const p = activePreset()
+  return !!p && !!summary && summary.preset === p.id
+}
+
+/** Drop both panes' image overlays (used when there is nothing to show here). */
+function clearOverlays(): void {
+  const empty = L.latLngBounds([
+    [0, 0],
+    [0, 0],
+  ])
+  leftPane.setOverlay(null, empty)
+  rightPane.setOverlay(null, empty)
+}
+
+/** Frame the city the user selected — never a grid that belongs to another one. */
+function frameSelectedCity(): void {
+  const p = activePreset()
+  if (p) {
+    leftPane.fit(layerBoundsFor(p.bbox))
+  } else if (layers) {
+    leftPane.fit(layerBounds(layers))
+  }
 }
 
 async function inspectPointAt(lat: number, lon: number): Promise<void> {
@@ -574,7 +648,12 @@ async function inspectPointAt(lat: number, lon: number): Promise<void> {
 }
 
 async function loadBenchmarkStations(validate = false): Promise<void> {
-  const currentPreset = summary?.preset || ($('preset') as HTMLSelectElement).value || 'mumbai'
+  // Markers are geography, so they follow the city on screen. Only validation
+  // (which needs predictions) targets the dataset the backend actually holds.
+  const selValue = ($('preset') as HTMLSelectElement).value
+  const currentPreset = validate
+    ? summary?.preset || selValue || 'mumbai'
+    : selValue || summary?.preset || 'mumbai'
   try {
     const data = await api.getBenchmarkStations(currentPreset)
     if (!data.stations.length && !data.landmarks.length) {
@@ -858,9 +937,9 @@ async function init(): Promise<void> {
   $<HTMLInputElement>('endDate').value = fmtDay(end)
   $<HTMLInputElement>('startDate').value = fmtDay(start)
 
-  await refreshState()
+  await refreshState(true)
   const loaded = summary ? await loadLayers() : false
-  if (!loaded) leftPane.fit(layerBoundsFor(config.presets.find((p) => p.id === presetSel.value)!.bbox))
+  if (!loaded) frameSelectedCity()
   status(summary ? 'previous results loaded' : 'ready')
   void refreshValidation(presetSel.value)
 
@@ -874,8 +953,9 @@ async function init(): Promise<void> {
       }),
       async () => {
         await refreshState()
-        renderOverlays()
-        void loadBenchmarkStations(false)
+        // Reload so the view shows this city's grid (or nothing but its bbox
+        // until Apply) instead of keeping the previously fetched city's pixels.
+        await loadLayers()
       },
       'fetch',
     )
