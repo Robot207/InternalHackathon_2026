@@ -66,12 +66,15 @@ def fetch_air_quality(
     domain: str,
     variables: list[str],
     progress=None,
-) -> np.ndarray:
+) -> tuple[np.ndarray, list[str]]:
+    import concurrent.futures
+
     n = len(lats)
     n_var = len(variables)
-    times: list[str] | None = None
-    out = np.full((n, 0, n_var), np.nan, dtype=np.float64)
-    for ci, rg in enumerate(_chunks(n)):
+    chunks = _chunks(n)
+
+    def _fetch_aq_chunk(args):
+        ci, rg = args
         params = {
             "latitude": ",".join(f"{lats[i]:.5f}" for i in rg),
             "longitude": ",".join(f"{lons[i]:.5f}" for i in rg),
@@ -83,9 +86,21 @@ def fetch_air_quality(
         if domain:
             params["domains"] = domain
         payload = _get(AQ_URL, params)
-        results = _as_list(payload)
-        if times is None:
-            times = list(results[0]["hourly"]["time"])
+        return ci, rg, _as_list(payload)
+
+    workers = min(4, len(chunks)) if len(chunks) > 1 else 1
+    if workers > 1:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
+            chunk_results = list(executor.map(_fetch_aq_chunk, enumerate(chunks)))
+    else:
+        chunk_results = [_fetch_aq_chunk((0, chunks[0]))] if chunks else []
+
+    times: list[str] | None = None
+    out = np.full((n, 0, n_var), np.nan, dtype=np.float64)
+
+    for ci, rg, results in chunk_results:
+        if times is None and results and "hourly" in results[0]:
+            times = list(results[0]["hourly"].get("time", []))
             out = np.full((n, len(times), n_var), np.nan, dtype=np.float64)
         for local_i, res in enumerate(results):
             idx = rg.start + local_i
@@ -98,7 +113,8 @@ def fetch_air_quality(
                 m = min(len(arr), out.shape[1])
                 out[idx, :m, vi] = arr[:m]
         if progress:
-            progress(0.05 + 0.35 * (ci + 1) / len(list(_chunks(n))), f"NO2 data chunk {ci + 1}")
+            progress(0.05 + 0.35 * (ci + 1) / len(chunks), f"satellite NO2 chunk {ci + 1}")
+
     return out, (times or [])
 
 
@@ -109,6 +125,7 @@ def fetch_weather(
     end_date: str,
     progress=None,
 ) -> tuple[np.ndarray, list[str]]:
+    import concurrent.futures
     import datetime as dt
 
     today = dt.datetime.now(dt.timezone.utc).date()
@@ -118,10 +135,10 @@ def fetch_weather(
     forecast_days = max(1, (ed - today).days + 1)
 
     n = len(lats)
-    times: list[str] | None = None
-    n_var = len(WX_VARIABLES)
-    out = np.full((n, 0, n_var), np.nan, dtype=np.float64)
-    for ci, rg in enumerate(_chunks(n)):
+    chunks = _chunks(n)
+
+    def _fetch_wx_chunk(args):
+        ci, rg = args
         params = {
             "latitude": ",".join(f"{lats[i]:.5f}" for i in rg),
             "longitude": ",".join(f"{lons[i]:.5f}" for i in rg),
@@ -131,9 +148,22 @@ def fetch_weather(
             "timezone": "UTC",
         }
         payload = _get(WX_URL, params)
-        results = _as_list(payload)
-        if times is None:
-            times = list(results[0]["hourly"]["time"])
+        return ci, rg, _as_list(payload)
+
+    workers = min(4, len(chunks)) if len(chunks) > 1 else 1
+    if workers > 1:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
+            chunk_results = list(executor.map(_fetch_wx_chunk, enumerate(chunks)))
+    else:
+        chunk_results = [_fetch_wx_chunk((0, chunks[0]))] if chunks else []
+
+    times: list[str] | None = None
+    n_var = len(WX_VARIABLES)
+    out = np.full((n, 0, n_var), np.nan, dtype=np.float64)
+
+    for ci, rg, results in chunk_results:
+        if times is None and results and "hourly" in results[0]:
+            times = list(results[0]["hourly"].get("time", []))
             out = np.full((n, len(times), n_var), np.nan, dtype=np.float64)
         for local_i, res in enumerate(results):
             idx = rg.start + local_i
@@ -146,9 +176,10 @@ def fetch_weather(
                 m = min(len(arr), out.shape[1])
                 out[idx, :m, vi] = arr[:m]
         if progress:
-            progress(0.4 + 0.25 * (ci + 1) / len(list(_chunks(n))), f"meteorology chunk {ci + 1}")
+            progress(0.4 + 0.25 * (ci + 1) / len(chunks), f"meteorology chunk {ci + 1}")
 
-    assert times is not None
+    if times is None:
+        raise RuntimeError("meteorology returned no timestamps")
     want = []
     for i, t in enumerate(times):
         d = t[:10]
@@ -162,7 +193,24 @@ def fetch_weather(
 
 
 def fetch_elevation(lats: np.ndarray, lons: np.ndarray, progress=None) -> np.ndarray:
+    import hashlib
+    from .config import ELEV_CACHE
+
     n = len(lats)
+    cache_str = f"{n}_{lats[0]:.4f}_{lats[-1]:.4f}_{lons[0]:.4f}_{lons[-1]:.4f}"
+    cache_hash = hashlib.md5(cache_str.encode()).hexdigest()[:12]
+    cache_file = ELEV_CACHE / f"elev_{cache_hash}.npz"
+    if cache_file.exists():
+        try:
+            cached_data = np.load(cache_file, allow_pickle=False)
+            elev_arr = cached_data["elevation"]
+            if len(elev_arr) == n:
+                if progress:
+                    progress(0.7, "elevation (cached)")
+                return elev_arr.astype(np.float64)
+        except Exception:
+            pass
+
     out = np.full(n, np.nan, dtype=np.float64)
     chunks = _chunks(n, 100)
     for ci, rg in enumerate(chunks):
@@ -178,6 +226,11 @@ def fetch_elevation(lats: np.ndarray, lons: np.ndarray, progress=None) -> np.nda
             progress(0.66 + 0.04 * (ci + 1) / len(chunks), f"elevation chunk {ci + 1}")
     if progress:
         progress(0.7, "elevation")
+    if np.isfinite(out).any():
+        try:
+            np.savez_compressed(cache_file, elevation=out)
+        except Exception:
+            pass
     return out
 
 

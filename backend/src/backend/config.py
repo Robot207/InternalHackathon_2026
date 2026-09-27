@@ -7,7 +7,10 @@ CACHE_DIR = BASE_DIR / "cache"
 ARTIFACT_DIR = BASE_DIR / "artifacts"
 DATASET_DIR = CACHE_DIR / "datasets"
 ROADS_CACHE = CACHE_DIR / "roads"
-for _d in (CACHE_DIR, ARTIFACT_DIR, DATASET_DIR, ROADS_CACHE):
+ELEV_CACHE = CACHE_DIR / "elevation"
+PRED_CACHE = CACHE_DIR / "predictions"
+LAYERS_CACHE = CACHE_DIR / "layers"
+for _d in (CACHE_DIR, ARTIFACT_DIR, DATASET_DIR, ROADS_CACHE, ELEV_CACHE, PRED_CACHE, LAYERS_CACHE):
     _d.mkdir(parents=True, exist_ok=True)
 
 AQ_URL = "https://air-quality-api.open-meteo.com/v1/air-quality"

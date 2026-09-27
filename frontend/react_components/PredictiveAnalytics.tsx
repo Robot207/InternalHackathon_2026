@@ -108,7 +108,7 @@ export const PredictiveAnalytics: React.FC<PredictiveProps> = ({
     level: 'normal',
     alert: false,
     badge: 'GOOD (Normal Dispersion)',
-    title: '🟢 Normal Air Quality Dispersion',
+    title: 'Normal Air Quality Dispersion',
     desc: 'Adequate atmospheric boundary layer ventilation. Concentrations within permissible limits.',
   };
 
@@ -132,7 +132,7 @@ export const PredictiveAnalytics: React.FC<PredictiveProps> = ({
         {/* What-If Simulator Panel */}
         <section className="bg-gradient-to-b from-[#ffb454]/10 to-[#161b23] border border-[#ffb454]/30 rounded-lg p-3">
           <div className="flex items-center justify-between mb-2 pb-1.5 border-b border-white/5">
-            <h3 className="text-xs font-bold text-white uppercase tracking-wider">🧪 What-If Simulator</h3>
+            <h3 className="text-xs font-bold text-white uppercase tracking-wider">What-If Simulator</h3>
             <span className="text-[10px] bg-[#ffb454]/20 text-[#ffb454] px-1.5 py-0.5 rounded font-bold">
               Policy Mode
             </span>
@@ -207,13 +207,13 @@ export const PredictiveAnalytics: React.FC<PredictiveProps> = ({
                 : 'bg-[#0e1116]/90 border border-[#10b981]/40'
             }`}
           >
-            <span className="text-2xl">{isAlert ? '⚠️' : isMitigated ? '🛡️' : '🟢'}</span>
+            <span className="text-2xl"></span>
             <div>
               <div className={`text-xs font-bold ${isAlert ? 'text-[#ff6b6b]' : isMitigated ? 'text-[#10b981]' : 'text-white'}`}>
                 {isAlert
-                  ? '⚠️ RED ALERT: High NO2 Stagnation. Trigger GRAP Protocols'
+                  ? 'RED ALERT: High NO2 Stagnation. Trigger GRAP Protocols'
                   : isMitigated
-                  ? '🛡️ Policy Intervened: Stagnation Averted'
+                  ? 'Policy Intervened: Stagnation Averted'
                   : step.title}
               </div>
               <div className={`text-[11px] mt-0.5 ${isAlert ? 'text-[#fca5a5]' : 'text-[#8b98a9]'}`}>

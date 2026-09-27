@@ -137,6 +137,7 @@ def get_validation() -> dict:
 
 
 _FORECAST_CACHE: dict[str, tuple[float, dict]] = {}
+_API_PROBE_CACHE: dict[tuple[float, float], tuple[float, float | None]] = {}
 
 
 @app.get("/api/forecast")
@@ -241,7 +242,7 @@ def get_forecast(preset: str | None = None, city: str | None = None) -> dict:
             level = "critical"
             alert = True
             badge = "CRITICAL (GRAP Stage IV)"
-            title = "⚠️ RED ALERT: High NO2 Stagnation. Trigger GRAP Protocols"
+            title = "RED ALERT: High NO2 Stagnation. Trigger GRAP Protocols"
             desc = (
                 f"Severe meteorological stagnation: Wind: {wind_val:.1f} km/h, RH: {rh_val:.0f}%, "
                 f"PBLH: {pblh_val:.0f}m (VC: {vc:.0f} m²/s). Critical stagnation trapping NO₂ ({no2_val:.1f} µg/m³) "
@@ -251,7 +252,7 @@ def get_forecast(preset: str | None = None, city: str | None = None) -> dict:
             level = "moderate"
             alert = False
             badge = "MODERATE (Advisory)"
-            title = "🟡 Moderate Stagnation Advisory"
+            title = "Moderate Stagnation Advisory"
             desc = (
                 f"Sub-optimal ventilation: Wind: {wind_val:.1f} km/h, RH: {rh_val:.0f}%, "
                 f"PBLH: {pblh_val:.0f}m (VC: {vc:.0f} m²/s). NO₂ concentrations elevated at {no2_val:.1f} µg/m³."
@@ -260,7 +261,7 @@ def get_forecast(preset: str | None = None, city: str | None = None) -> dict:
             level = "normal"
             alert = False
             badge = "GOOD (Normal Dispersion)"
-            title = "🟢 Normal Air Quality Dispersion"
+            title = "Normal Air Quality Dispersion"
             desc = (
                 f"Adequate boundary layer ventilation: Wind: {wind_val:.1f} km/h, RH: {rh_val:.0f}%, "
                 f"PBLH: {pblh_val:.0f}m (VC: {vc:.0f} m²/s). NO₂ at safe level ({no2_val:.1f} µg/m³)."
@@ -424,11 +425,14 @@ def result_layers() -> FileResponse:
     pred_path = artifacts.latest_dir() / "predictions.npz"
 
     if (not pred_path.exists() or not meta or meta.get("summary_key") != key) and artifacts.has_model():
-        data = load_dataset(key)
-        new_meta = run_apply(data, False, summary)
-        artifacts.write_meta(new_meta)
-        artifacts.write_layers(summary)
-        STATE["meta"] = new_meta
+        if artifacts.has_cached_prediction(key) and artifacts.restore_cached_prediction(key):
+            STATE["meta"] = artifacts.read_meta()
+        else:
+            data = load_dataset(key)
+            new_meta = run_apply(data, False, summary)
+            artifacts.write_meta(new_meta)
+            artifacts.write_layers(summary)
+            STATE["meta"] = new_meta
 
     path = artifacts.layers_file()
     if not path.exists() or path.stat().st_mtime < pred_path.stat().st_mtime:
@@ -489,6 +493,9 @@ async def validate_stations(file: UploadFile = File(...)) -> dict:
 
 @app.get("/api/probe")
 def probe_pixel(lat: float, lon: float) -> dict:
+    import time
+    import httpx
+
     if STATE.get("summary") is None:
         raise HTTPException(404, "no dataset summary available; fetch first")
     summary = STATE["summary"]
@@ -497,11 +504,14 @@ def probe_pixel(lat: float, lon: float) -> dict:
     pred_path = artifacts.latest_dir() / "predictions.npz"
 
     if (not pred_path.exists() or not meta or meta.get("summary_key") != key) and artifacts.has_model():
-        data = load_dataset(key)
-        new_meta = run_apply(data, False, summary)
-        artifacts.write_meta(new_meta)
-        artifacts.write_layers(summary)
-        STATE["meta"] = new_meta
+        if artifacts.has_cached_prediction(key) and artifacts.restore_cached_prediction(key):
+            STATE["meta"] = artifacts.read_meta()
+        else:
+            data = load_dataset(key)
+            new_meta = run_apply(data, False, summary)
+            artifacts.write_meta(new_meta)
+            artifacts.write_layers(summary)
+            STATE["meta"] = new_meta
 
     if not pred_path.exists():
         raise HTTPException(404, "no predictions available; train or apply first")
@@ -526,18 +536,94 @@ def probe_pixel(lat: float, lon: float) -> dict:
     times = summary.get("times", [])
     t_len = min(len(times), pred_grid.shape[0]) if times else pred_grid.shape[0]
 
-    series = [round(float(v), 2) if np.isfinite(v) else None for v in pred_grid[:t_len, row, col]]
-    base_series = [round(float(v), 2) if np.isfinite(v) else None for v in cup_grid[:t_len, row, col]]
-    ref_series = (
-        [round(float(v), 2) if np.isfinite(v) else None for v in ref_grid[:t_len, row, col]]
-        if ref_grid is not None and ref_grid.shape[0] >= t_len
-        else None
-    )
+    # Continuous sub-pixel bilinear interpolation for precise location (lat, lon)
+    if len(lats) > 1 and len(lons) > 1:
+        dlat = (lats[-1] - lats[0]) / max(len(lats) - 1, 1)
+        dlon = (lons[-1] - lons[0]) / max(len(lons) - 1, 1)
+        rf = float(np.clip((lat - lats[0]) / dlat, 0.0, len(lats) - 1.0))
+        cf = float(np.clip((lon - lons[0]) / dlon, 0.0, len(lons) - 1.0))
+        r0 = int(np.floor(rf))
+        r1 = min(r0 + 1, len(lats) - 1)
+        c0 = int(np.floor(cf))
+        c1 = min(c0 + 1, len(lons) - 1)
+        dr = rf - r0
+        dc = cf - c0
+
+        w00 = (1.0 - dr) * (1.0 - dc)
+        w01 = (1.0 - dr) * dc
+        w10 = dr * (1.0 - dc)
+        w11 = dr * dc
+
+        exact_series_arr = (
+            w00 * pred_grid[:t_len, r0, c0]
+            + w01 * pred_grid[:t_len, r0, c1]
+            + w10 * pred_grid[:t_len, r1, c0]
+            + w11 * pred_grid[:t_len, r1, c1]
+        )
+        exact_base_arr = (
+            w00 * cup_grid[:t_len, r0, c0]
+            + w01 * cup_grid[:t_len, r0, c1]
+            + w10 * cup_grid[:t_len, r1, c0]
+            + w11 * cup_grid[:t_len, r1, c1]
+        )
+        series = [round(float(v), 2) if np.isfinite(v) else None for v in exact_series_arr]
+        base_series = [round(float(v), 2) if np.isfinite(v) else None for v in exact_base_arr]
+        if ref_grid is not None and ref_grid.shape[0] >= t_len:
+            exact_ref_arr = (
+                w00 * ref_grid[:t_len, r0, c0]
+                + w01 * ref_grid[:t_len, r0, c1]
+                + w10 * ref_grid[:t_len, r1, c0]
+                + w11 * ref_grid[:t_len, r1, c1]
+            )
+            ref_series = [round(float(v), 2) if np.isfinite(v) else None for v in exact_ref_arr]
+        else:
+            ref_series = None
+    else:
+        series = [round(float(v), 2) if np.isfinite(v) else None for v in pred_grid[:t_len, row, col]]
+        base_series = [round(float(v), 2) if np.isfinite(v) else None for v in cup_grid[:t_len, row, col]]
+        ref_series = (
+            [round(float(v), 2) if np.isfinite(v) else None for v in ref_grid[:t_len, row, col]]
+            if ref_grid is not None and ref_grid.shape[0] >= t_len
+            else None
+        )
 
     valid_vals = [v for v in series if v is not None]
     mean_val = round(float(np.mean(valid_vals)), 2) if valid_vals else 0.0
     min_val = round(float(np.min(valid_vals)), 2) if valid_vals else 0.0
     max_val = round(float(np.max(valid_vals)), 2) if valid_vals else 0.0
+
+    # Query exact NO2 density for this precise coordinate via Open-Meteo Air Quality API
+    api_exact_no2 = None
+    cache_key_pt = (round(lat, 4), round(lon, 4))
+    now_t = time.time()
+    if cache_key_pt in _API_PROBE_CACHE and (now_t - _API_PROBE_CACHE[cache_key_pt][0] < 900):
+        api_exact_no2 = _API_PROBE_CACHE[cache_key_pt][1]
+    else:
+        try:
+            with httpx.Client(timeout=2.0, follow_redirects=True) as client:
+                resp = client.get(
+                    "https://air-quality-api.open-meteo.com/v1/air-quality",
+                    params={
+                        "latitude": round(lat, 5),
+                        "longitude": round(lon, 5),
+                        "hourly": "nitrogen_dioxide",
+                        "forecast_days": 1,
+                    },
+                )
+                if resp.status_code == 200:
+                    aq_json = resp.json().get("hourly", {})
+                    no2_vals = aq_json.get("nitrogen_dioxide", [])
+                    if no2_vals and no2_vals[0] is not None:
+                        api_exact_no2 = round(float(no2_vals[0]), 2)
+            _API_PROBE_CACHE[cache_key_pt] = (now_t, api_exact_no2)
+        except Exception:
+            pass
+
+    exact_model_val = valid_vals[-1] if valid_vals else mean_val
+    agreement_pct = None
+    if api_exact_no2 is not None and api_exact_no2 > 0:
+        err_ratio = abs(exact_model_val - api_exact_no2) / max(api_exact_no2, 12.0)
+        agreement_pct = round(max(0.0, min(100.0, (1.0 - err_ratio) * 100.0)), 1)
 
     elev_val = float(elev_grid[row, col]) if elev_grid is not None else 0.0
     road_val = float(roads_grid[row, col]) if roads_grid is not None else 0.0
@@ -573,6 +659,11 @@ def probe_pixel(lat: float, lon: float) -> dict:
         "mean": mean_val,
         "min": min_val,
         "max": max_val,
+        "is_precise": True,
+        "exact_no2_model": exact_model_val,
+        "exact_no2_api": api_exact_no2,
+        "api_source": "Open-Meteo High-Resolution CAMS API",
+        "agreement_pct": agreement_pct,
         "elevation_m": round(elev_val, 1),
         "road_density": round(road_val, 3),
         "nearest_station": st_dict,
@@ -631,7 +722,7 @@ async def unhandled(request, exc):  # noqa: ANN001
 def main() -> None:
     import uvicorn
 
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+    uvicorn.run("backend.main:app", host="127.0.0.1", port=8000, reload=True)
 
 
 if __name__ == "__main__":

@@ -37,6 +37,9 @@ let trafficReductionActive = false
 let currentForecast: import('./types').ForecastResponse | null = null
 const PREDICT_LABELS = ['[Now] (0 Hours)', '[+12 Hrs]', '[+24 Hrs]', '[+48 Hrs]', '[+72 Hrs]']
 
+const layerCache = new Map<string, Layers>()
+const forecastCache = new Map<string, import('./types').ForecastResponse>()
+
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
 async function showHighTechLoading(stageCallback: () => Promise<void>): Promise<void> {
@@ -45,20 +48,20 @@ async function showHighTechLoading(stageCallback: () => Promise<void>): Promise<
   loader.classList.remove('hidden')
 
   const steps = [
-    '📡 Fetching Sentinel-5P...',
-    '☁️ Imputing Gaps under Cloudy Conditions...',
-    '⚡ Applying XGBoost + Kriging...',
-    '🌐 Rendering 1km Hyper-Local Grid...',
+    'Fetching Sentinel-5P...',
+    'Imputing Gaps under Cloudy Conditions...',
+    'Applying XGBoost + Kriging...',
+    'Rendering 1km Hyper-Local Grid...',
   ]
 
   let i = 0
   const interval = setInterval(() => {
     i = (i + 1) % steps.length
     text.textContent = steps[i]
-  }, 480)
+  }, 220)
 
   try {
-    await sleep(1950)
+    await sleep(60)
     await stageCallback()
   } finally {
     clearInterval(interval)
@@ -92,7 +95,7 @@ async function runJob(
     })
     if (job.status === 'error') throw new Error(job.error || 'job failed')
     setProgress(1)
-    status(`${label} ✓`)
+    status(`${label} - Complete`)
     await done()
   } catch (err) {
     status(err instanceof Error ? err.message : String(err), true)
@@ -108,7 +111,7 @@ function updateButtons(): void {
   $<HTMLButtonElement>('btnFetch').disabled = jobRunning
   $<HTMLButtonElement>('btnTrain').disabled = jobRunning || !summary || !summary.has_reference
   $<HTMLButtonElement>('btnApply').disabled = jobRunning || !summary || !hasModel
-  $('btnFetch').textContent = jobRunning ? '⏳ working…' : '⬇ Fetch coarse data'
+  $('btnFetch').textContent = jobRunning ? 'Working…' : 'Fetch coarse data'
 }
 
 function fmtDay(d: Date): string {
@@ -143,7 +146,7 @@ function renderWarnings(): void {
   if (meta) {
     for (const w of meta.warnings || []) if (!msgs.includes(w)) msgs.push(w)
   }
-  el.innerHTML = msgs.map((m) => `⚠ ${m}`).join('<br>')
+  el.innerHTML = msgs.map((m) => `[Notice] ${m}`).join('<br>')
 }
 
 function card(kind: string, key: string, value: string, base?: string): string {
@@ -511,7 +514,15 @@ function updateTimeLabel(): void {  if (!layers) {
 
 async function loadLayers(): Promise<boolean> {
   try {
-    layers = await api.layers()
+    const cacheKey = summary?.key
+    if (cacheKey && layerCache.has(cacheKey)) {
+      layers = layerCache.get(cacheKey)!
+    } else {
+      layers = await api.layers()
+      if (cacheKey && layers) {
+        layerCache.set(cacheKey, layers)
+      }
+    }
     timeIdx = layers.t_len
     const slider = $<HTMLInputElement>('timeSlider')
     slider.max = String(layers.t_len)
@@ -597,9 +608,9 @@ async function handleProbe(lat: number, lon: number): Promise<void> {
 
   const panel = $('probePanel')
   panel.classList.remove('hidden')
-  $('probeCoords').textContent = `Query: ${lat.toFixed(5)}°N, ${lon.toFixed(5)}°E`
+  $('probeCoords').textContent = `Precise Coordinate: ${lat.toFixed(5)}°N, ${lon.toFixed(5)}°E`
   $('probeCurrent').textContent = 'Loading…'
-  $('probeStatus').textContent = 'Querying 100m pixel profile and inversion...'
+  $('probeStatus').textContent = 'Interpolating exact sub-pixel profile & querying API...'
 
   try {
     const res = await api.probe(lat, lon)
@@ -615,18 +626,34 @@ function renderProbeData(): void {
   if (!currentProbe) return
   const p = currentProbe
 
-  $('probeCoords').textContent = `Pixel: ${p.pixel_lat.toFixed(4)}°N, ${p.pixel_lon.toFixed(4)}°E (Grid [${p.row}, ${p.col}]) · Elev: ${p.elevation_m}m · Road Density: ${p.road_density}`
+  $('probeCoords').textContent = `Precise Location: ${p.query_lat.toFixed(5)}°N, ${p.query_lon.toFixed(5)}°E (Grid Cell [${p.row}, ${p.col}]) · Elev: ${p.elevation_m}m · Road Density: ${p.road_density}`
 
   const currentVal =
     timeIdx < p.series.length && p.series[timeIdx] !== null
       ? p.series[timeIdx]
-      : p.mean
+      : (p.exact_no2_model ?? p.mean)
 
   $('probeCurrent').textContent = currentVal !== null ? `${currentVal} µg/m³` : 'N/A'
   $('probeStatus').textContent =
     timeIdx < p.t_len
-      ? `Hour ${timeIdx + 1}/${p.t_len} (${p.times[timeIdx]?.slice(0, 16).replace('T', ' ') || ''})`
-      : `Period Mean across ${p.t_len} hours`
+      ? `Hour ${timeIdx + 1}/${p.t_len} (${p.times[timeIdx]?.slice(0, 16).replace('T', ' ') || ''}) · Continuous Sub-Pixel`
+      : `Period Mean across ${p.t_len} hours · Continuous Sub-Pixel`
+
+  const apiEl = $('probeApiNo2')
+  const apiAgrEl = $('probeApiAgreement')
+  if (apiEl) {
+    if (p.exact_no2_api !== null && p.exact_no2_api !== undefined) {
+      apiEl.textContent = `${p.exact_no2_api} µg/m³`
+      if (apiAgrEl) {
+        apiAgrEl.textContent = p.agreement_pct !== null && p.agreement_pct !== undefined
+          ? `${p.agreement_pct}% model convergence (Live API)`
+          : 'Exact Open-Meteo API query'
+      }
+    } else {
+      apiEl.textContent = 'Syncing...'
+      if (apiAgrEl) apiAgrEl.textContent = 'API reading pending'
+    }
+  }
 
   $('probeMean').textContent = `${p.mean} µg/m³`
   $('probeRange').textContent = `min: ${p.min} · max: ${p.max} µg/m³`
@@ -639,7 +666,7 @@ function renderProbeData(): void {
     $('probeStationDist').textContent = `${p.nearest_station.dist_km} km away (${p.nearest_station.network} station)`
   } else {
     $('probeStation').textContent = 'Virtual Ground Monitor'
-    $('probeStationDist').textContent = 'Sub-pixel reconstructed profile'
+    $('probeStationDist').textContent = 'Continuous sub-pixel physical probe'
   }
 
   renderProbeChart(p)
@@ -831,8 +858,8 @@ function updateForecastUI(): void {
 
   if (isSevere) {
     widget.className = 'red-alert-widget danger'
-    icon.textContent = '⚠️'
-    title.textContent = '⚠️ RED ALERT: High NO2 Stagnation. Trigger GRAP Protocols'
+    icon.textContent = ''
+    title.textContent = 'RED ALERT: High NO2 Stagnation. Trigger GRAP Protocols'
     text.textContent = `Severe atmospheric trapping: Wind: ${stepData.wind_speed.toFixed(1)} km/h, RH: ${stepData.humidity ? stepData.humidity.toFixed(0) : 85}%, PBLH: ${stepData.pblh.toFixed(0)}m (VC: ${vc.toFixed(0)} m²/s). Critical stagnation trapping NO₂ (${effectiveNo2.toFixed(1)} µg/m³) across urban corridors.`
     if (stag) {
       stag.textContent = 'CRITICAL (GRAP Stage IV)'
@@ -840,8 +867,8 @@ function updateForecastUI(): void {
     }
   } else if (trafficReductionActive && (stepData.alert || mapHasRed) && !isSevere) {
     widget.className = 'red-alert-widget warning'
-    icon.textContent = '🛡️'
-    title.textContent = '🛡️ Policy Intervened: Stagnation Averted'
+    icon.textContent = ''
+    title.textContent = 'Policy Intervened: Stagnation Averted'
     text.textContent = `40% Traffic Drop cut vehicular peak NO₂ by ${(stepData.no2 * 0.4).toFixed(1)} µg/m³ (from ${stepData.no2.toFixed(1)} to ${effectiveNo2.toFixed(1)} µg/m³), successfully averting emergency stagnation!`
     if (stag) {
       stag.textContent = 'MITIGATED (Policy Active)'
@@ -849,8 +876,8 @@ function updateForecastUI(): void {
     }
   } else if (isModerate) {
     widget.className = 'red-alert-widget warning'
-    icon.textContent = '🟡'
-    title.textContent = '🟡 Moderate Stagnation Advisory'
+    icon.textContent = ''
+    title.textContent = 'Moderate Stagnation Advisory'
     text.textContent = `Sub-optimal ventilation: Wind: ${stepData.wind_speed.toFixed(1)} km/h, RH: ${stepData.humidity ? stepData.humidity.toFixed(0) : 65}%, PBLH: ${stepData.pblh.toFixed(0)}m (VC: ${vc.toFixed(0)} m²/s). NO₂ elevated at ${effectiveNo2.toFixed(1)} µg/m³.`
     if (stag) {
       stag.textContent = 'MODERATE (Advisory)'
@@ -858,8 +885,8 @@ function updateForecastUI(): void {
     }
   } else {
     widget.className = 'red-alert-widget normal'
-    icon.textContent = '🟢'
-    title.textContent = '🟢 Normal Air Quality Dispersion'
+    icon.textContent = ''
+    title.textContent = 'Normal Air Quality Dispersion'
     text.textContent = `Adequate boundary layer ventilation: Wind: ${stepData.wind_speed.toFixed(1)} km/h, RH: ${stepData.humidity ? stepData.humidity.toFixed(0) : 55}%, PBLH: ${stepData.pblh.toFixed(0)}m (VC: ${vc.toFixed(0)} m²/s). NO₂ at safe level (${effectiveNo2.toFixed(1)} µg/m³).`
     if (stag) {
       stag.textContent = 'GOOD (Normal Dispersion)'
@@ -870,7 +897,12 @@ function updateForecastUI(): void {
 
 async function loadForecastForCity(cityId: string): Promise<void> {
   try {
-    currentForecast = await api.forecast(cityId)
+    if (forecastCache.has(cityId)) {
+      currentForecast = forecastCache.get(cityId)!
+    } else {
+      currentForecast = await api.forecast(cityId)
+      if (currentForecast) forecastCache.set(cityId, currentForecast)
+    }
     updateForecastUI()
     if (predictivePane) renderPredictiveOverlay()
   } catch (err) {
@@ -1057,7 +1089,7 @@ async function init(): Promise<void> {
               if (predictivePane) predictivePane.fit(bounds)
               renderOverlays()
               if (predictivePane) renderPredictiveOverlay()
-              status(`Downscaled NO₂ density map ready for ${matched.name} ✓`)
+              status(`Downscaled NO₂ density map ready for ${matched.name} - Complete`)
             },
             `downscale ${matched.name}`,
           )
@@ -1084,7 +1116,7 @@ async function init(): Promise<void> {
     document.body.appendChild(a)
     a.click()
     document.body.removeChild(a)
-    status('Dataset exported successfully ✓')
+    status('Dataset exported successfully')
   })
 
   // Tab Navigation Routing

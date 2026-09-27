@@ -4,7 +4,7 @@ import json
 
 import numpy as np
 
-from .config import ARTIFACT_DIR
+from .config import ARTIFACT_DIR, LAYERS_CACHE, PRED_CACHE
 from .grids import block_upsample, make_grid, upsample
 
 LAYER_NAMES = ["prediction", "reference", "coarse", "coarse_bilinear", "residual", "cloud_gap"]
@@ -33,6 +33,37 @@ def read_meta() -> dict | None:
 def write_meta(meta: dict) -> None:
     latest_dir().mkdir(parents=True, exist_ok=True)
     (latest_dir() / "meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    key = meta.get("summary_key")
+    if key:
+        (PRED_CACHE / f"{key}_meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
+
+
+def cached_layers_file(key: str):
+    return LAYERS_CACHE / f"{key}.json"
+
+
+def cached_pred_file(key: str):
+    return PRED_CACHE / f"{key}.npz"
+
+
+def has_cached_prediction(key: str) -> bool:
+    return (PRED_CACHE / f"{key}.npz").exists() and (LAYERS_CACHE / f"{key}.json").exists()
+
+
+def restore_cached_prediction(key: str) -> bool:
+    import shutil
+    pred_src = PRED_CACHE / f"{key}.npz"
+    layers_src = LAYERS_CACHE / f"{key}.json"
+    meta_src = PRED_CACHE / f"{key}_meta.json"
+    if pred_src.exists() and layers_src.exists():
+        latest = latest_dir()
+        latest.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(pred_src, latest / "predictions.npz")
+        shutil.copy2(layers_src, latest / "layers.json")
+        if meta_src.exists():
+            shutil.copy2(meta_src, latest / "meta.json")
+        return True
+    return False
 
 
 def build_layers(summary: dict) -> dict:
@@ -124,7 +155,11 @@ def _round(arr: np.ndarray, digits: int = 2) -> list:
 def write_layers(summary: dict) -> dict:
     layers = build_layers(summary)
     latest_dir().mkdir(parents=True, exist_ok=True)
-    (latest_dir() / "layers.json").write_text(json.dumps(layers), encoding="utf-8")
+    json_text = json.dumps(layers)
+    (latest_dir() / "layers.json").write_text(json_text, encoding="utf-8")
+    key = summary.get("key")
+    if key:
+        (LAYERS_CACHE / f"{key}.json").write_text(json_text, encoding="utf-8")
     return layers
 
 

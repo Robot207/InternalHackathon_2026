@@ -569,8 +569,8 @@ def run_apply(data: dict, conserve: bool, summary: dict, progress=None) -> dict:
         meta["metrics"] = local_metrics
         meta["holdout_description"] = "full field (in-sample)"
     out_dir.mkdir(parents=True, exist_ok=True)
-    np.savez_compressed(
-        out_dir / "predictions.npz",
+    from .config import PRED_CACHE
+    pred_payload = dict(
         pred=pred.astype(np.float32),
         c_up=feat["c_up"].astype(np.float32),
         gap_up=feat["gap_up"].astype(np.float32),
@@ -580,6 +580,10 @@ def run_apply(data: dict, conserve: bool, summary: dict, progress=None) -> dict:
         test_cell=np.zeros((feat["H"], feat["W"]), dtype=bool),
         test_hours=np.zeros(feat["t_len"], dtype=bool),
     )
+    np.savez_compressed(out_dir / "predictions.npz", **pred_payload)
+    key = summary.get("key")
+    if key:
+        np.savez_compressed(PRED_CACHE / f"{key}.npz", **pred_payload)
     if progress:
         progress(0.9, "artifacts saved")
     return meta

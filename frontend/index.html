@@ -17,17 +17,17 @@
           <!-- Tab Navigation -->
           <nav class="nav-tabs" role="tablist">
             <button id="tabLive" class="tab-btn active" role="tab" aria-selected="true">
-              <span class="tab-icon">🌐</span> Live Downscaling (Page 1)
+              Live Downscaling (Page 1)
             </button>
             <button id="tabPredict" class="tab-btn" role="tab" aria-selected="false">
-              <span class="tab-icon">⏱️</span> 72-Hour Prediction (Page 2)
+              72-Hour Prediction (Page 2)
             </button>
           </nav>
         </div>
         <div class="header-right">
           <!-- Prominent Export Button -->
           <button id="btnExportHeader" class="btn-export-header" title="Download downscaled 1km grid dataset">
-            ⬇ Export Dataset (GeoTIFF/CSV)
+            Export Dataset (GeoTIFF/CSV)
           </button>
           <div id="jobStatus" class="job-status">idle</div>
         </div>
@@ -57,7 +57,7 @@
             <!-- Persistent Validation Dashboard -->
             <section class="panel validation-panel" id="valDashboardPanel">
               <div class="panel-header-row">
-                <h3>⭐ Validation Dashboard</h3>
+                <h3>Validation Dashboard</h3>
                 <span class="protocol-badge">LOSO Active</span>
               </div>
               <div class="val-dashboard-body">
@@ -84,7 +84,7 @@
               <h3>1 · Satellite Data &amp; City Selection</h3>
               <label class="field">Target City (100+ Indian Cities)
                 <div class="search-input-wrap">
-                  <input type="text" id="cityInput" list="citiesList" placeholder="🔍 Search Indian City (Default: Nagpur)..." autocomplete="off" />
+                  <input type="text" id="cityInput" list="citiesList" placeholder="Search Indian City (Default: Nagpur)..." autocomplete="off" />
                   <datalist id="citiesList"></datalist>
                   <select id="preset" class="hidden-select"></select>
                 </div>
@@ -100,7 +100,7 @@
               <label class="field">Cloud cutoff (%)
                 <input type="number" id="cloudThreshold" min="0" max="100" value="60" />
               </label>
-              <button id="btnFetch" class="primary">⬇ Fetch coarse data</button>
+              <button id="btnFetch" class="primary">Fetch coarse data</button>
               <div id="dataInfo" class="info">no dataset loaded</div>
             </section>
 
@@ -113,8 +113,8 @@
                 <select id="split"></select>
               </label>
               <label class="inline"><input type="checkbox" id="conserve" checked /> keep satellite pixel totals (mass conservation)</label>
-              <button id="btnTrain" class="primary">🧠 Train &amp; downscale (1km)</button>
-              <button id="btnApply" class="secondary" title="Re-run the trained model on the currently fetched region without retraining.">🚀 Apply trained model (transfer)</button>
+              <button id="btnTrain" class="primary">Train &amp; downscale (1km)</button>
+              <button id="btnApply" class="secondary" title="Re-run the trained model on the currently fetched region without retraining.">Apply trained model (transfer)</button>
               <div id="warnings" class="warnings"></div>
             </section>
 
@@ -136,14 +136,14 @@
               </div>
               <div class="wb-shap-container" style="margin-top: 10px; border-top: 1px solid rgba(255,255,255,0.08); padding-top: 8px;">
                 <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
-                  <h4 style="margin:0; font-size:11px; text-transform:uppercase; color:#35d0c0;">📊 Tree SHAP vs World Bank</h4>
+                  <h4 style="margin:0; font-size:11px; text-transform:uppercase; color:#35d0c0;">Tree SHAP vs World Bank</h4>
                   <span style="font-size:10px; color:#ffb454;">Literature</span>
                 </div>
                 <div id="wbShapList" class="wb-shap-list" style="display:flex; flex-direction:column; gap:5px; font-size:10px;"></div>
               </div>
               <div class="export-links" style="margin-top: 10px;">
-                <a id="exportCsv" class="export" href="/api/export/csv" download>⬇ Download CSV (1km Grid)</a>
-                <a id="exportNc" class="export" href="/api/export/netcdf" download>⬇ Download NetCDF</a>
+                <a id="exportCsv" class="export" href="/api/export/csv" download>Download CSV (1km Grid)</a>
+                <a id="exportNc" class="export" href="/api/export/netcdf" download>Download NetCDF</a>
               </div>
             </section>
           </aside>
@@ -181,10 +181,10 @@
             <div id="probePanel" class="probe-panel hidden">
               <div class="probe-header">
                 <div class="probe-title">
-                  <span class="probe-icon">🎯</span>
+                  <span class="probe-icon-dot"></span>
                   <div>
                     <strong>Virtual Ground Monitor Probe</strong>
-                    <span id="probeCoords" class="probe-subtitle">Click anywhere on the map to inspect 1km pixel</span>
+                    <span id="probeCoords" class="probe-subtitle">Click anywhere on the map to inspect precise location</span>
                   </div>
                 </div>
                 <button id="btnProbeClose" class="probe-close" title="Close probe panel">✕</button>
@@ -192,9 +192,14 @@
               <div class="probe-body">
                 <div class="probe-metrics">
                   <div class="probe-card main-reading">
-                    <div class="k">Surface NO₂ Concentration</div>
+                    <div class="k">Exact Downscaled NO₂</div>
                     <div id="probeCurrent" class="v">--</div>
-                    <div id="probeStatus" class="b">at selected hour</div>
+                    <div id="probeStatus" class="b">sub-pixel continuous model</div>
+                  </div>
+                  <div class="probe-card">
+                    <div class="k">Exact Live API NO₂</div>
+                    <div id="probeApiNo2" class="v">--</div>
+                    <div id="probeApiAgreement" class="b">Open-Meteo CAMS mesh</div>
                   </div>
                   <div class="probe-card">
                     <div class="k">Period Mean / Range</div>
@@ -222,7 +227,7 @@
               </div>
             </div>
             <div class="timeline">
-              <button id="btnPlay" title="play">▶</button>
+              <button id="btnPlay" title="play">Play</button>
               <input type="range" id="timeSlider" min="0" max="0" value="0" />
               <span id="timeLabel">–</span>
               <div class="legend">
@@ -254,7 +259,7 @@
             <!-- What-If Simulator Panel -->
             <section class="panel what-if-panel">
               <div class="panel-header-row">
-                <h3>🧪 What-If Simulator</h3>
+                <h3>What-If Simulator</h3>
                 <span class="active-badge">Policy Mode</span>
               </div>
               <label class="what-if-control">
@@ -310,7 +315,7 @@
 
               <!-- Floating Red Alert Widget -->
               <div id="redAlertWidget" class="red-alert-widget normal">
-                <div class="alert-icon" id="alertIcon">🟢</div>
+                <div class="alert-icon" id="alertIcon"></div>
                 <div class="alert-content">
                   <div id="alertTitle" class="alert-title">Normal Air Quality Dispersion</div>
                   <div id="alertText" class="alert-text">Adequate boundary layer ventilation. NO₂ below stagnation threshold.</div>

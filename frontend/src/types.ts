@@ -138,6 +138,11 @@ export interface ProbeResponse {
     assumed_pblh_m: number
     thermo_factor: number
   }
+  is_precise?: boolean
+  exact_no2_model?: number
+  exact_no2_api?: number | null
+  api_source?: string
+  agreement_pct?: number | null
 }
 
 export type Cube = (number | null)[][][]
