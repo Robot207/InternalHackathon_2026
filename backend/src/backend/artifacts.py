@@ -343,7 +343,7 @@ def export_geotiff(summary: dict, time_idx: int = -1) -> "object":
 
 
 def inspect_point(lat: float, lon: float, summary: dict) -> dict:
-    from .stations import MUMBAI_LANDMARKS, MUMBAI_STATIONS
+    from .places import resolve_place
 
     data = np.load(latest_dir() / "predictions.npz", allow_pickle=False)
     pred = data["pred"].astype(np.float64)
@@ -362,45 +362,61 @@ def inspect_point(lat: float, lon: float, summary: dict) -> dict:
     matched_lat = float(lats[ri])
     matched_lon = float(lons[ci])
 
-    # Find nearest landmark or station
-    all_places = MUMBAI_LANDMARKS + MUMBAI_STATIONS
-    nearest_place = None
-    min_dist_km = 9999.0
-    for p in all_places:
-        d_km = 111.0 * np.sqrt((lat - p["lat"]) ** 2 + ((lon - p["lon"]) * np.cos(np.radians(lat))) ** 2)
-        if d_km < min_dist_km:
-            min_dist_km = d_km
-            nearest_place = p
+    # Is the click inside the active 1 km grid?  A click in a *different* city
+    # snaps to the nearest cell of the active analysis, which would otherwise
+    # report values from hundreds of kilometres away — flag it instead.
+    fine_step = float(summary.get("fine_step") or 0.01)
+    eps = fine_step / 2.0 + 1e-9
+    in_domain = bool(
+        lats.min() - eps <= lat <= lats.max() + eps
+        and lons.min() - eps <= lon <= lons.max() + eps
+    )
+
+    # Hyperlocal place name: curated POI -> OSM reverse geocode -> city centre.
+    place = resolve_place(lat, lon)
 
     # Current time (latest frame)
     t_curr = pred.shape[0] - 1
-    p_curr = float(pred[t_curr, ri, ci]) if np.isfinite(pred[t_curr, ri, ci]) else None
-    b_curr = float(c_up[t_curr, ri, ci]) if np.isfinite(c_up[t_curr, ri, ci]) else None
-    g_curr = bool(gap[t_curr, ri, ci] > 0.5)
+    p_curr = (
+        float(pred[t_curr, ri, ci])
+        if in_domain and np.isfinite(pred[t_curr, ri, ci])
+        else None
+    )
+    b_curr = (
+        float(c_up[t_curr, ri, ci])
+        if in_domain and np.isfinite(c_up[t_curr, ri, ci])
+        else None
+    )
+    g_curr = bool(in_domain and gap[t_curr, ri, ci] > 0.5)
 
     aqi_info = get_aqi_category(p_curr) if p_curr is not None else get_aqi_category(-1)
 
     # 24-hour diurnal profile
-    t_window = min(24, pred.shape[0])
-    series_times = times[-t_window:] if times else []
-    series_downscaled = [
-        round(float(v), 2) if np.isfinite(v) else None for v in pred[-t_window:, ri, ci]
-    ]
-    series_baseline = [
-        round(float(v), 2) if np.isfinite(v) else None for v in c_up[-t_window:, ri, ci]
-    ]
+    t_window = min(24, pred.shape[0]) if in_domain else 0
+    series_times = times[-t_window:] if times and t_window else []
+    series_downscaled = (
+        [round(float(v), 2) if np.isfinite(v) else None for v in pred[-t_window:, ri, ci]]
+        if t_window
+        else []
+    )
+    series_baseline = (
+        [round(float(v), 2) if np.isfinite(v) else None for v in c_up[-t_window:, ri, ci]]
+        if t_window
+        else []
+    )
 
-    elev_val = float(elev[ri, ci]) if np.isfinite(elev[ri, ci]) else 0.0
-    road_val = float(roads[ri, ci]) if np.isfinite(roads[ri, ci]) else 0.0
+    elev_val: float | None = None
+    road_val: float | None = None
+    if in_domain:
+        elev_val = float(elev[ri, ci]) if np.isfinite(elev[ri, ci]) else None
+        road_val = float(roads[ri, ci]) if np.isfinite(roads[ri, ci]) else None
 
     return {
         "query": {"lat": round(lat, 5), "lon": round(lon, 5)},
         "cell": {"lat": round(matched_lat, 5), "lon": round(matched_lon, 5), "r": ri, "c": ci},
-        "nearest_landmark": {
-            "name": nearest_place["name"] if nearest_place else "Local Cell",
-            "distance_km": round(min_dist_km, 2),
-            "type": nearest_place.get("type") or nearest_place.get("category") or "Urban",
-        },
+        "in_domain": in_domain,
+        "active_preset": summary.get("preset"),
+        "nearest_landmark": place,
         "current": {
             "downscaled_no2": round(p_curr, 2) if p_curr is not None else None,
             "baseline_no2": round(b_curr, 2) if b_curr is not None else None,
@@ -408,8 +424,8 @@ def inspect_point(lat: float, lon: float, summary: dict) -> dict:
             "aqi": aqi_info,
         },
         "static_features": {
-            "elevation_m": round(elev_val, 1),
-            "road_density_km_km2": round(road_val, 3),
+            "elevation_m": round(elev_val, 1) if elev_val is not None else None,
+            "road_density_km_km2": round(road_val, 3) if road_val is not None else None,
         },
         "diurnal_24h": {
             "times": series_times,

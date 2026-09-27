@@ -7,7 +7,7 @@ from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 
-from . import artifacts, jobs
+from . import artifacts, forecast, jobs
 from .cities import DEFAULT_CITY, city_list, register_cities, resolve_city
 from .config import ARTIFACT_DIR, BASE_DIR, DEFAULT_FINE_STEP, MODELS, PRESETS, SPLITS
 from .dataset import build_dataset, dataset_paths, load_dataset
@@ -96,6 +96,27 @@ def get_cities() -> dict:
 def get_loso(preset: str | None = None) -> dict:
     """Leave-One-Station-Out cross-validation metrics for the active domain."""
     return run_loso(preset)
+
+
+@app.get("/api/forecast")
+def get_forecast(preset: str = "mumbai", city: str | None = None) -> dict:
+    """72-hour NO2 projection driven by the live Open-Meteo forecast.
+
+    `city` wins over `preset`, exactly like /api/fetch, so the horizon is
+    always computed for the bbox the UI is actually showing.
+    """
+    target = preset
+    if city:
+        resolved = resolve_city(city)
+        if not resolved:
+            raise HTTPException(400, f"unknown city '{city}'")
+        target = resolved[0]
+    if target not in PRESETS:
+        raise HTTPException(400, f"unknown preset '{target}'")
+    try:
+        return forecast.build(target, STATE.get("summary"))
+    except Exception as exc:  # noqa: BLE001 - provider outage must not 500 the UI
+        raise HTTPException(502, f"forecast unavailable: {exc}") from exc
 
 
 @app.get("/api/state")

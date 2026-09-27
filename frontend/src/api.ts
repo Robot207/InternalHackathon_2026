@@ -62,6 +62,10 @@ export const api = {
     request<import('./types').Validation>(
       `/api/validation/loso${preset ? `?preset=${encodeURIComponent(preset)}` : ''}`,
     ),
+  forecast: (preset: string) =>
+    request<import('./types').Forecast>(
+      `/api/forecast?preset=${encodeURIComponent(preset)}`,
+    ),
 }
 
 

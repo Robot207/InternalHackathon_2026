@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import time
 
 import joblib
 import numpy as np
@@ -154,6 +155,30 @@ def _conserve(pred: np.ndarray, data: dict, feat: dict) -> np.ndarray:
     return out.reshape(t_len, h, w)
 
 
+def _save_predictions(out_dir, **arrays) -> None:
+    """Write `predictions.npz` through a temp file + atomic rename.
+
+    The UI polls `/api/result/layers` (and LOSO/station evals read the same
+    file) *while* a Train/Apply job is still running, so writing it in place
+    handed those readers a truncated archive and a 500 (`EOFError`) for the
+    duration of the copy. The rename is atomic on the same volume, so readers
+    see either the old file or the complete new one.
+    """
+    final = out_dir / "predictions.npz"
+    tmp = out_dir / "predictions.tmp.npz"  # must end in .npz: numpy appends it
+    np.savez_compressed(tmp, **arrays)
+    for attempt in range(10):
+        try:
+            tmp.replace(final)
+            return
+        except OSError:
+            # Windows: a reader that still has the old file open for a few
+            # milliseconds makes the rename fail; it clears on its own.
+            if attempt == 9:
+                raise
+            time.sleep(0.1)
+
+
 def run_training(
     data: dict,
     model_name: str,
@@ -243,8 +268,8 @@ def run_training(
     out_dir = ARTIFACT_DIR / "latest"
     out_dir.mkdir(parents=True, exist_ok=True)
     joblib.dump(model, out_dir / "model.joblib")
-    np.savez_compressed(
-        out_dir / "predictions.npz",
+    _save_predictions(
+        out_dir,
         pred=pred.astype(np.float32),
         c_up=c_up.astype(np.float32),
         gap_up=feat["gap_up"].astype(np.float32),
@@ -323,8 +348,8 @@ def run_apply(data: dict, conserve: bool, summary: dict, progress=None) -> dict:
         meta["metrics"] = local_metrics
         meta["holdout_description"] = "full field (in-sample)"
     out_dir.mkdir(parents=True, exist_ok=True)
-    np.savez_compressed(
-        out_dir / "predictions.npz",
+    _save_predictions(
+        out_dir,
         pred=pred.astype(np.float32),
         c_up=feat["c_up"].astype(np.float32),
         gap_up=feat["gap_up"].astype(np.float32),

@@ -6,7 +6,7 @@ import './style.css'
 import { api, pollJob } from './api'
 import { initCitySelect, syncCitySelect } from './citySelect'
 import { initExportMenu } from './exportMenu'
-import { initForecast, refreshForecast } from './forecast'
+import { initForecast, refreshForecast, resetForecast } from './forecast'
 import { frameAt, frameToUrl } from './gridImage'
 import { runLoadingSequence } from './loadingOverlay'
 import { createPane, syncMaps, type MarkerData, type Pane } from './map'
@@ -438,6 +438,9 @@ async function loadLayers(): Promise<boolean> {
     renderOverlays()
     updateTimeLabel()
     renderMetrics()
+    // A new analysis changes the baseline the 72 h projection starts from.
+    resetForecast()
+    refreshForecast()
     void loadBenchmarkStations(false)
     return true
   } catch {
@@ -475,6 +478,10 @@ function setPresetDefaults(): void {
   // Always frame the newly selected city: loaded results may belong to a
   // different domain, and leaving the map on the old one looks broken.
   leftPane.fit(bounds)
+  // Page 2 must follow the same city: drop the previous projection, re-frame
+  // its map (refreshForecast only fits once it has pixels) and refetch the met.
+  resetForecast()
+  refreshForecast()
   void loadBenchmarkStations(false)
 }
 
@@ -503,6 +510,14 @@ async function inspectPointAt(lat: number, lon: number): Promise<void> {
     const bVal = cur.baseline_no2 !== null ? `${cur.baseline_no2} µg/m³` : 'N/A'
 
     const series = res.diurnal_24h.downscaled.filter((v): v is number => v !== null)
+    const where =
+      lm.distance_km > 0 ? `${lm.distance_km} km away · ${lm.type}` : `in this ${lm.type}`
+    // Outside the active grid the backend omits values rather than reporting a
+    // cell from another city — explain that instead of showing bare N/A.
+    const domainWarn =
+      res.in_domain === false
+        ? `<div class="hint" style="margin-top:6px;">Outside the active 1 km grid (<b>${res.active_preset ?? 'current dataset'}</b>) — place info only. Run <b>Fetch &amp; Downscale</b> for this city to get its NO₂ values.</div>`
+        : ''
     let sparklineSvg = ''
     if (series.length > 1) {
       const min = Math.min(...series)
@@ -528,8 +543,9 @@ async function inspectPointAt(lat: number, lon: number): Promise<void> {
     el.innerHTML = `
       <div class="inspector-header">
         <span class="inspector-place">📍 ${lm.name}</span>
-        <span class="inspector-coords">${lm.distance_km} km away</span>
+        <span class="inspector-coords">${where}</span>
       </div>
+      ${domainWarn}
       <div class="inspector-metrics">
         <div class="metric-box">
           <div class="label">ML Downscaled</div>
@@ -546,10 +562,11 @@ async function inspectPointAt(lat: number, lon: number): Promise<void> {
       </div>
       ${sparklineSvg}
       <div class="inspector-env">
-        <span>Elevation: <b>${res.static_features.elevation_m}m</b></span> ·
-        <span>Roads: <b>${res.static_features.road_density_km_km2} km/km²</b></span> ·
+        <span>Elevation: <b>${res.static_features.elevation_m ?? '—'}${res.static_features.elevation_m != null ? 'm' : ''}</b></span> ·
+        <span>Roads: <b>${res.static_features.road_density_km_km2 ?? '—'}${res.static_features.road_density_km_km2 != null ? ' km/km²' : ''}</b></span> ·
         <span>Gap repaired: <b>${cur.cloud_gap_repaired ? 'Yes' : 'Direct observation'}</b></span>
       </div>
+      ${lm.source ? `<div class="hint" style="margin-top:4px;">Place: ${lm.source}</div>` : ''}
     `
   } catch (err) {
     el.innerHTML = `<div class="info error">Inspection failed: ${err instanceof Error ? err.message : String(err)}</div>`
@@ -827,7 +844,7 @@ async function init(): Promise<void> {
       status(`switching to ${config.presets.find((p) => p.id === id)?.label ?? id}…`)
       // Full-screen staged animation (~2s) before the map repaints.
       await runLoadingSequence(2000)
-      setPresetDefaults()
+      setPresetDefaults() // also resets + re-frames the 72 h projection
       updateButtons()
       await refreshValidation(id)
       status('ready')

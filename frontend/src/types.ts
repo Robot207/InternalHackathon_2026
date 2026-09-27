@@ -226,10 +226,16 @@ export interface BenchmarkArenaResponse {
 export interface PointInspectResult {
   query: { lat: number; lon: number }
   cell: { lat: number; lon: number; r: number; c: number }
+  /** False when the clicked point falls outside the active 1 km grid. */
+  in_domain?: boolean
+  /** Preset that produced the active grid (shown when out of domain). */
+  active_preset?: string
   nearest_landmark: {
     name: string
     distance_km: number
     type: string
+    /** "Curated POI" | "OpenStreetMap (Nominatim)" | "Offline city registry" | ... */
+    source?: string
   }
   current: {
     downscaled_no2: number | null
@@ -242,13 +248,53 @@ export interface PointInspectResult {
     }
   }
   static_features: {
-    elevation_m: number
-    road_density_km_km2: number
+    elevation_m: number | null
+    road_density_km_km2: number | null
   }
   diurnal_24h: {
     times: string[]
     downscaled: (number | null)[]
     baseline: (number | null)[]
   }
+}
+
+/** Hourly meteorology for the active bbox, from /api/forecast. */
+export interface ForecastMet {
+  temperature_c: (number | null)[]
+  humidity_pct: (number | null)[]
+  wind_ms: (number | null)[]
+  wind_dir_deg: (number | null)[]
+  blh_m: (number | null)[]
+  cloud_pct: (number | null)[]
+  precip_mm: (number | null)[]
+  pressure_hpa: (number | null)[]
+}
+
+/** 72-hour NO2 projection: live met + emission x dispersion model. */
+export interface Forecast {
+  preset: string
+  bbox: number[]
+  generated_at: string
+  timezone: string
+  utc_offset_seconds: number
+  source: string
+  baseline_ugm3: number
+  baseline_source: string
+  horizons: number[]
+  hours: string[]
+  met: ForecastMet
+  model: {
+    factor: number[]
+    factor_mitigated: number[]
+    stagnation: number[]
+    emission_index: number[]
+    dispersion_index: number[]
+    traffic_index: number[]
+    projected_ugm3: number[]
+    alert: boolean[]
+    alert_reason: string[]
+    baseline_ugm3: number
+  }
+  stale: boolean
 }
 

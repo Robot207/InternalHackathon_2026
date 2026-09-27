@@ -106,6 +106,52 @@ uv run scripts/preload_osm.py --list     # candidate extracts + their bboxes
 Overpass stays as the fallback for any bbox no extract covers (custom regions,
 cities outside the listed zones), and a good cached grid is always preferred.
 
+### 72-hour projection: live weather instead of a fixed curve
+
+Page 2 used to carry the last frame forward with hand-written growth numbers
+(`1.07` at +12 h … `1.46` at +72 h), so the driver panel, the stagnation index
+and the GRAP alert never moved with the weather. It now calls
+`GET /api/forecast?preset=<id>`, which:
+
+* pulls **73 hourly steps of Open-Meteo forecast** — temperature, relative
+  humidity, wind speed/direction, cloud, precipitation, boundary-layer height,
+  surface pressure — for a **3×3 sample over the bbox** in a single keyless
+  request (measured: **1 request, 1.3 s, 66 KiB**) — wind is averaged as a
+  vector, since averaging *degrees* of direction is meaningless (N and S would
+  average to E) — and serves it from an in-process cache for 30 minutes;
+* projects NO₂ through a transparent **emission × dispersion** model
+  `C(t) = C₀ · E(t)/E₀ · D₀/D(t)`:
+
+  * `E` — weekday/weekend **traffic profile** with 08:30 and 19:00 rush peaks
+    (55 % traffic share, weekends calmer);
+  * `D` — `0.55·clip(u/6 m/s) + 0.45·clip(BLH/1200 m) + 0.35·rain washout`,
+    i.e. wind, mixing height and wet deposition;
+* derives a **stagnation index** (0–1) and arms the red GRAP widget from the
+  forecast rather than from the slider position: `stagnation ≥ 0.70` or a
+  projected city mean ≥ 80 µg/m³ (CPCB "Moderate" band) — nothing else. An
+  earlier draft also lowered the bar to `stagnation ≥ 0.50` past T+48 h "for
+  lead time", which made every horizon beyond +48 h read red on its own, so the
+  lead-time rule is gone: a horizon is red only when the data says so. A windy
+  horizon therefore reads green and a stagnant night reads red, with the reason
+  spelled out;
+* returns business-as-usual **and** −40 % traffic factors, so
+  *Simulate 40% Traffic Drop* re-runs the emission term instead of multiplying
+  by a constant.
+
+The baseline is the mean of the frame drawn at "Now", so the projected city
+mean and the map always agree. If Open-Meteo is unreachable the UI falls back to
+the old fixed profile and labels the badge `met fallback`.
+
+Page 2 also follows the city chosen in the header: switching drops the previous
+projection, re-frames the map and refetches the meteorology for the new bbox —
+and while no downscaling result exists for *that* city it draws the
+clearly-labelled simulated plume rather than stretching another city's grid over
+it (the badge tells you to run Live Downscaling). The colour ramp uses **one
+shared domain across all horizons**, sized to the largest projected factor, so
+dragging the slider and the 40 % traffic what-if actually brighten or cool the
+map — scaling the field *and* its colour limits together used to render a
+pixel-identical picture at every stop.
+
 ## Available solutions (prior art) — and the gap
 
 Research for the statement's "Available Solutions" section found only *partial*
@@ -150,7 +196,7 @@ Open http://localhost:5173, then:
    The **Live Downscaling** tab shows the synced dual maps with the persistent
    metrics panel (XGBoost + Kriging, LOSO protocol, live RMSE).
 3. **72‑Hour Prediction** tab — full-width map with a Now → +72 Hrs slider, a red
-   GRAP alert that arms at **+48 Hrs**, and a *Simulate 40% Traffic Drop* what-if.
+   GRAP alert that arms **from the forecast** only when stagnation ≥ 0.70 or the projected mean reaches 80 µg/m³ (no lead-time rule — a windy horizon reads green), and a *Simulate 40% Traffic Drop* what-if.
 4. Explore layers, scrub the timeline, read the metrics cards, and **Export
    Dataset (GeoTIFF/CSV)** from the header.
 
@@ -202,7 +248,7 @@ whenever a reference exists).
 | `POST /api/benchmark/models` | Multi-model arena leaderboard across all algorithms (job) |
 | `GET /api/jobs/{id}` | Job progress/stage polling |
 | `GET /api/result/meta`, `GET /api/result/layers` | Metrics/importances; grid layers for the map |
-| `GET /api/point/inspect?lat=&lon=` | Hyperlocal point inspector (AQI, diurnal curve, landmark) |
+| `GET /api/point/inspect?lat=&lon=` | Hyperlocal point inspector: AQI, 24 h curve, static features + a real place name **in any city** (curated POI → OSM reverse geocode → city centre); `in_domain=false` marks clicks outside the active grid |
 | `GET /api/stations/benchmark` | Built-in CPCB CAAQMS stations & landmark pins (Mumbai) |
 | `POST /api/stations/benchmark/validate` | 1-Click evaluate model against Mumbai CPCB ground sensors |
 | `POST /api/validate/stations` | Custom CSV (`lon,lat,no2[,time]`) independent validation |
@@ -212,6 +258,7 @@ whenever a reference exists).
 | `GET /api/export/geotiff` | GeoTIFF export (EPSG:4326, deflate) — needs `uv add rasterio` |
 | `GET /api/cities` | Indexed cities + bboxes for the searchable city selector |
 | `GET /api/validation/loso` | Leave-One-Station-Out cross-validation: `rmse_score`, per-station folds |
+| `GET /api/forecast?preset=&city=` | 72-h NO₂ projection for Page 2: hourly live met, factors, stagnation, alerts |
 
 All long operations are jobs: they return `{job_id}` immediately and report
 `progress` + human-readable `stage` (e.g. `evaluating Random Forest (1/6)`).
@@ -220,13 +267,17 @@ All long operations are jobs: they return `{job_id}` immediately and report
 ## Data sources
 
 Everything is **API-key-free**: Open‑Meteo Air Quality & Forecast (CAMS,
-ECMWF), Open‑Meteo DEM, Geofabrik OSM extracts read with DuckDB (road density;
-Overpass as fallback) and OSM raster tiles. Data © Copernicus/Open‑Meteo open
-services, © OpenStreetMap contributors (ODbL).
+ECMWF), Open‑Meteo Forecast hourly met (Page 2's 72‑h projection), Open‑Meteo
+DEM, Geofabrik OSM extracts read with DuckDB (road density;
+Overpass as fallback), OSM raster tiles and OSM **Nominatim** reverse geocoding
+for the point inspector's place names (≤ 1 request/s, one cached answer per
+0.01° cell). Data © Copernicus/Open‑Meteo open services, © OpenStreetMap
+contributors (ODbL).
 
 *Keys, if we ever need one:* Open‑Meteo's free tier is non-commercial and
 limited to 600 calls/min, 5,000/h, 10,000/day, 300,000/month — at ~16–25
-requests per Fetch we are two orders of magnitude below that. Its paid
+requests per Fetch (plus one 72‑h forecast call per city every 30 minutes) we
+are two orders of magnitude below that. Its paid
 Standard/Professional/Enterprise plans issue an **API key** for
 `customer-api.open-meteo.com` with unlimited per-minute/hourly limits, reserved
 servers and a commercial licence. Native Sentinel‑5P L2 would require a
@@ -242,6 +293,8 @@ backend/
     config.py          presets, models, splits, API endpoints
     fetch.py           keyless downloads (NO₂/met/DEM/OSM)
     osm_local.py       Geofabrik PBF header parsing + DuckDB road density
+    forecast.py        72-h met-driven NO₂ projection (Open-Meteo Forecast)
+    places.py          inspector place names (curated POI → Nominatim → registry)
     dataset.py         orchestration, cloud mask, gap-fill, caching
     features.py        23-feature matrix builder
     training.py        splits, fit, predict, conservation, metrics
@@ -254,6 +307,7 @@ frontend/
   src/main.ts          workflow glue, job polling, map rendering
   src/map.ts           synced dual Leaflet maps + gridline pane
   src/gridImage.ts     grid arrays → PNG overlays
+  src/forecast.ts      Page 2: live-met 72-h projection, GRAP alert, what-if
 docs/                  pipeline & result screenshots
 ```
 
@@ -275,4 +329,8 @@ docs/                  pipeline & result screenshots
   when one covers the bbox (the Mumbai/Delhi/London/Paris presets all do) and
   falls back to Overpass otherwise; if neither works the feature is dropped for
   that run, cached and reported as a degraded-feature warning.
+- The 72-hour projection is a **met-driven statistical model** (traffic profile
+  × ventilation), not a chemical-transport model: it scales the analysis frame
+  uniformly and inherits forecast uncertainty, so a horizon is a scenario to
+  plan around, not a prediction of a street's concentration.
 - Research prototype — not a health advisory.
