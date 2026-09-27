@@ -4,13 +4,17 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>NO2 Downscale · PSAI02</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet" />
   </head>
   <body>
     <div id="app">
       <header>
         <div class="brand">
           NO<sub>2</sub> Downscale
-          <span class="tag">PSAI02 · satellite air-quality map sharpening</span>
+          <span class="tag">PSAI02 · satellite air quality map sharpening</span>
         </div>
         <div id="jobStatus" class="job-status">idle</div>
       </header>
@@ -18,7 +22,7 @@
       <div id="layout">
         <aside id="sidebar">
           <section class="panel">
-            <h3>1 · Satellite data</h3>
+            <h3>Satellite data</h3>
             <label class="field">Region
               <select id="preset"></select>
             </label>
@@ -38,7 +42,7 @@
           </section>
 
           <section class="panel">
-            <h3>2 · Model</h3>
+            <h3>Model</h3>
             <label class="field">Algorithm
               <select id="model"></select>
             </label>
@@ -52,7 +56,7 @@
           </section>
 
           <section class="panel" id="metricsPanel">
-            <h3>3 · Validation on unseen data</h3>
+            <h3>Validation on unseen data</h3>
             <div id="metrics" class="cards">run training to see metrics</div>
             <div class="row2">
               <div>
@@ -67,7 +71,7 @@
           </section>
 
           <section class="panel">
-            <h3>4 · Independent stations</h3>
+            <h3>Independent stations</h3>
             <p class="hint">Upload CSV with <code>lon,lat,no2</code> columns (optional <code>time</code>) to validate against unseen station data.</p>
             <input type="file" id="csvFile" accept=".csv" />
             <div id="stationResult" class="info"></div>
@@ -97,8 +101,8 @@
             </div>
             <div class="pane-ctrl grid-ctrl" title="Draw cell boundaries on both maps">
               <span class="pane-dot grid"></span> gridlines
-              <label><input type="checkbox" id="gridCoarse" checked /> 0.25° pixel edges</label>
-              <label><input type="checkbox" id="gridFine" checked /> 0.05° fine grid (right)</label>
+              <label><input type="checkbox" id="gridCoarse" checked /> 0.25°</label>
+              <label><input type="checkbox" id="gridFine" checked /> 0.05°</label>
             </div>
           </div>
           <div class="maps">
