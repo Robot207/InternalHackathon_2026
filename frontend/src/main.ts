@@ -12,7 +12,7 @@ import { runLoadingSequence } from './loadingOverlay'
 import { createPane, syncMaps, type MarkerData, type Pane } from './map'
 import { initTabs } from './tabs'
 import { refreshValidation, renderValidation } from './validationPanel'
-import type { AppConfig, BenchmarkArenaResponse, Job, Layers, Meta, Preset, StationBenchmarkResponse, Summary } from './types'
+import type { AppConfig, BenchmarkArenaResponse, FrameValidation, Job, Layers, Meta, Metrics, Preset, StationBenchmarkResponse, Summary } from './types'
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T
 
@@ -38,6 +38,14 @@ let lastInspect: { lat: number; lon: number } | null = null
 /** Monotonic id so a slow response can't overwrite a newer frame's values. */
 let inspectSeq = 0
 let inspectTimer: number | null = null
+/**
+ * Unseen-data metrics for the frame on screen. Panel 4 used to quote
+ * `meta.metrics`, one number computed at train time, so scrubbing the timeline
+ * changed nothing — this is re-fetched per frame instead.
+ */
+let frameVal: FrameValidation | null = null
+let frameValSeq = 0
+let frameValTimer: number | null = null
 let leftPane: Pane
 let rightPane: Pane
 
@@ -153,23 +161,59 @@ function card(kind: string, key: string, value: string, base?: string): string {
   }</div>`
 }
 
+/**
+ * One line of honesty under the cards: which frame was scored, against what,
+ * or — when the region has no independent truth — what the shown numbers
+ * actually are (they never silently pass for local validation).
+ */
+function metricsNote(fm: Metrics | undefined, fv: FrameValidation | null): string {
+  if (fm && fv?.frame) {
+    return [`⏱ ${fv.frame.label}`, fv.holdout_description, fv.source_label, fv.note]
+      .filter(Boolean)
+      .join(' · ')
+  }
+  if (fv && !fv.available && fv.source !== 'none') {
+    // Independent truth exists here, just not on this frame (e.g. a temporal
+    // holdout whose unseen hours are only the tail of the timeline).
+    return [`⏱ ${fv.frame?.label ?? 'this frame'}: ${fv.reason ?? 'no unseen samples'}`, fv.note]
+      .filter(Boolean)
+      .join(' · ')
+  }
+  if (fv && fv.source === 'none') {
+    const place = summary?.preset ? ` for ${summary.preset.replace(/_/g, ' ')}` : ''
+    const shown =
+      meta?.mode === 'transfer'
+        ? "the benchmark region's holdout — a different region, not this city"
+        : "this result's whole-period holdout"
+    return `No independent local reference${place} — the cards show ${shown}, identical on every frame.`
+  }
+  return 'Whole-period holdout — one number, identical on every timeline frame.'
+}
+
 function renderMetrics(): void {
   const el = $('metrics')
+  const note = $('metricsNote')
   if (!meta) {
     el.textContent = 'run training to see metrics'
+    note.textContent = ''
     renderScatter(null)
     renderImportance(null)
     return
   }
-  const m = meta.metrics ?? (meta.mode === 'transfer' ? meta.benchmark?.metrics : undefined)
+  // Frame-level score when this frame has truth to score against; otherwise
+  // fall back to the period-level numbers (labelled, never implied as local).
+  const fv = frameVal
+  const fm = fv?.available && fv.metrics ? fv.metrics : undefined
+  const m = fm ?? meta.metrics ?? (meta.mode === 'transfer' ? meta.benchmark?.metrics : undefined)
   if (!m) {
     el.textContent = 'no held-out metrics for this result'
+    note.textContent = ''
     renderScatter(null)
     renderImportance(meta.importances ?? meta.benchmark?.importances ?? null)
     return
   }
-  const splitLabel = meta.holdout_description ?? meta.benchmark?.holdout_description
-  const nHold = meta.n_test ?? meta.benchmark?.n_test ?? m.n
+  const splitLabel = (fm ? fv?.holdout_description : undefined) ?? meta.holdout_description ?? meta.benchmark?.holdout_description
+  const nHold = fm ? m.n : meta.n_test ?? meta.benchmark?.n_test ?? m.n
   el.innerHTML = [
     card(
       m.skill_vs_baseline >= 0 ? 'good' : 'warn',
@@ -183,17 +227,25 @@ function renderMetrics(): void {
     card('', 'sample n', String(nHold), splitLabel || ''),
     card('', 'cloud gap', `${Math.round((meta.gap_fraction ?? 0) * 100)}%`, 'coarse pixels repaired'),
   ].join('')
+  note.textContent = metricsNote(fm, fv)
   renderScatter(meta)
   renderImportance(meta.importances ?? meta.benchmark?.importances ?? null)
 }
 
 function renderScatter(m: Meta | null): void {
   const svg = $('scatter')
+  const note = $('scatterNote')
   svg.innerHTML = ''
-  if (!m || !layers) return
+  if (!m || !layers) {
+    note.textContent = ''
+    return
+  }
   const pred = frameAt(layers.layers.prediction, timeIdx)
   const ref = frameAt(layers.layers.reference, timeIdx)
-  if (!pred || !ref) return
+  if (!pred || !ref) {
+    note.textContent = ''
+    return
+  }
   const pts: [number, number][] = []
   for (let r = 0; r < pred.length; r++) {
     for (let c = 0; c < pred[0].length; c++) {
@@ -202,7 +254,14 @@ function renderScatter(m: Meta | null): void {
       if (typeof a === 'number' && typeof b === 'number' && isFinite(a) && isFinite(b)) pts.push([b, a])
     }
   }
-  if (!pts.length) return
+  if (!pts.length) {
+    // An empty plot is only honest if it says *why* it is empty.
+    note.textContent = layers.ranges.reference
+      ? 'No paired prediction/reference samples on this frame.'
+      : 'No independent fine reference for this city — nothing to plot against.'
+    return
+  }
+  note.textContent = ''
   const xs = pts.map((p) => p[0])
   const ys = pts.map((p) => p[1])
   const xmin = Math.min(...xs)
@@ -472,6 +531,9 @@ async function loadLayers(): Promise<boolean> {
     renderMetrics()
     // The panel must describe the frame/city that is on screen now.
     refreshInspect()
+    // A new city/frame changes what "unseen data" even means here.
+    clearFrameValidation()
+    refreshFrameValidation()
     // A new analysis changes the baseline the 72 h projection starts from.
     resetForecast()
     refreshForecast()
@@ -483,6 +545,7 @@ async function loadLayers(): Promise<boolean> {
     // leaving them under the newly framed view.
     clearOverlays()
     updateTimeLabel()
+    clearFrameValidation()
     renderMetrics()
     return false
   }
@@ -508,6 +571,9 @@ async function refreshState(syncCity = false): Promise<void> {
   renderDataInfo()
   renderWarnings()
   renderMetrics()
+  // meta just changed: any cached frame score belongs to the old result.
+  clearFrameValidation()
+  refreshFrameValidation()
   drawGridlines()
   updateButtons()
 }
@@ -532,6 +598,9 @@ function setPresetDefaults(): void {
     if (inspectTimer !== null) window.clearTimeout(inspectTimer)
     $('inspectorContent').innerHTML =
       '<div class="hint">No results for this city yet — run <b>Apply model (transfer)</b> to inspect points here.</div>'
+    // Likewise: a frame score for the previous city must not describe this map.
+    clearFrameValidation()
+    renderMetrics()
   } else {
     refreshInspect()
   }
@@ -703,6 +772,41 @@ function refreshInspect(debounceMs = 0): void {
     void inspectPointAt(lat, lon, true)
   }
   if (debounceMs > 0) inspectTimer = window.setTimeout(run, debounceMs)
+  else run()
+}
+
+/** Drop the previous city/frame's validation so stale numbers can't be shown. */
+function clearFrameValidation(): void {
+  frameVal = null
+  if (frameValTimer !== null) window.clearTimeout(frameValTimer)
+  frameValTimer = null
+  frameValSeq++ // cancel anything in flight for the old frame
+}
+
+/**
+ * Re-score the unseen data for the frame the map just painted. The panel used
+ * to re-render one period-level number on every scrub tick, so it looked frozen.
+ */
+function refreshFrameValidation(debounceMs = 0): void {
+  if (frameValTimer !== null) window.clearTimeout(frameValTimer)
+  const run = (): void => {
+    frameValTimer = null
+    const seq = ++frameValSeq
+    const t = timeIdx
+    api
+      .frameValidation(t)
+      .then((res) => {
+        if (seq !== frameValSeq) return // a newer scrub superseded this one
+        frameVal = res
+        renderMetrics()
+      })
+      .catch(() => {
+        if (seq !== frameValSeq) return
+        frameVal = null
+        renderMetrics()
+      })
+  }
+  if (debounceMs > 0) frameValTimer = window.setTimeout(run, debounceMs)
   else run()
 }
 
@@ -1083,6 +1187,8 @@ async function init(): Promise<void> {
     // Keep the inspector *and* the model-vs-reference scatter on the frame the
     // map just painted (debounced: `input` fires on every pixel of a scrub).
     refreshInspect(180)
+    // Same frame, new score: re-run the unseen-data validation for it.
+    refreshFrameValidation(180)
     if (meta) renderMetrics()
   })
 
@@ -1103,6 +1209,7 @@ async function init(): Promise<void> {
       renderOverlays()
       updateTimeLabel()
       refreshInspect()
+      refreshFrameValidation(150)
       if (meta) renderMetrics()
     }, 450)
   })

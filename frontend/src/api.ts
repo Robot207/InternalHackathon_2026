@@ -69,6 +69,15 @@ export const api = {
     request<import('./types').Validation>(
       `/api/validation/loso${preset ? `?preset=${encodeURIComponent(preset)}` : ''}`,
     ),
+  /**
+   * Unseen-data metrics for one timeline frame. `t` follows the inspector's
+   * convention: 0..n-1 is that hour, `n` (slider end stop) is the period-mean
+   * frame.
+   */
+  frameValidation: (t?: number) =>
+    request<import('./types').FrameValidation>(
+      `/api/validation/frame${t === undefined ? '' : `?t=${Math.round(t)}`}`,
+    ),
   forecast: (preset: string) =>
     request<import('./types').Forecast>(
       `/api/forecast?preset=${encodeURIComponent(preset)}`,

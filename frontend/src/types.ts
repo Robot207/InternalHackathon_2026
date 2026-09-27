@@ -271,6 +271,32 @@ export interface PointInspectResult {
   }
 }
 
+/** Unseen-data validation for one timeline frame, from /api/validation/frame. */
+export interface FrameValidation {
+  /** True only when this frame has independent truth to score against. */
+  available: boolean
+  /** "reference" (fine satellite product) | "stations" (ground monitors) | "none". */
+  source: 'reference' | 'stations' | 'none'
+  source_label?: string | null
+  /** Why the frame could not be scored (present when available=false). */
+  reason?: string | null
+  /** Extra honesty line, e.g. the period-mean station caveat. */
+  note?: string | null
+  /** Same frame the map is painting: index=null for the period-mean frame. */
+  frame?: {
+    index: number | null
+    is_mean: boolean
+    label: string
+    time: string | null
+  } | null
+  split?: string | null
+  holdout_description?: string | null
+  /** Unseen samples behind ``metrics`` (holdout cells or stations). */
+  n?: number
+  metrics?: Metrics | null
+  timestamp?: string
+}
+
 /** Hourly meteorology for the active bbox, from /api/forecast. */
 export interface ForecastMet {
   temperature_c: (number | null)[]

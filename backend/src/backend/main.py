@@ -15,7 +15,7 @@ from .losocv import ALGORITHMS, run_loso, validation_summary
 from .schemas import ApplyRequest, FetchRequest, TrainRequest
 from .stations import evaluate_built_in_stations, get_stations_and_landmarks
 from .training import run_apply, run_benchmark_arena, run_training
-from .validation import validate_station_csv
+from .validation import frame_validation, validate_station_csv
 
 # Fold the Indian-city bounding boxes into PRESETS before any request is served.
 register_cities()
@@ -319,6 +319,16 @@ def inspect_point_endpoint(lat: float, lon: float, t: int | None = None) -> dict
         return artifacts.inspect_point(lat, lon, summary, time_idx=t)
     except Exception as exc:
         raise HTTPException(400, f"Point inspection error: {exc}") from exc
+
+
+@app.get("/api/validation/frame")
+def validation_frame_endpoint(t: int | None = None) -> dict:
+    """Unseen-data metrics for the timeline frame the UI is painting.
+
+    ``t`` omitted / ``t`` = n_times / negative -> the "period mean" frame.
+    Never 5xx: a missing dataset or broken result reports ``available: false``.
+    """
+    return frame_validation(t)
 
 
 @app.get("/api/export/geojson")

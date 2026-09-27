@@ -33,7 +33,7 @@ The sidebar runs the whole workflow: fetch → train → validate → export.
 3. **Feature engineering** — coarse NO₂ + neighbour statistics, gap fraction, met features, cyclic hour/weekday, elevation, road density, coordinates, city distance (~23 features).
 4. **Model** — scikit-learn/XGBoost regressors (`random_forest`, `extra_trees`, `hist_gradient_boosting`, `xgboost`, `mlp`) trained on the **log-ratio** between the fine truth and the bilinear coarse baseline, so the model learns sub-pixel *structure* rather than the smooth background.
 5. **Conservation** — predictions are re-pinned so every 0.25° block keeps its original satellite total; the model may only redistribute mass inside the pixel.
-6. **Validation** — held-out spatial blocks, a held-out time window, or both; scored against the bilinear baseline (RMSE/MAE/pattern r²/skill). Station CSV upload gives a fully independent check. On top of that, **Leave-One-Station-Out cross-validation** (`GET /api/validation/loso`) refits a calibration on the *n−1* CPCB/MPCB CAAQMS stations and scores the held-out one, so `rmse_score` is a genuine unseen-station estimate (a documented reference RMSE is shown — flagged `estimated: true` — when the active bbox contains fewer than 4 stations).
+6. **Validation** — held-out spatial blocks, a held-out time window, or both; scored against the bilinear baseline (RMSE/MAE/pattern r²/skill). Station CSV upload gives a fully independent check. On top of that, **Leave-One-Station-Out cross-validation** (`GET /api/validation/loso`) refits a calibration on the *n−1* CPCB/MPCB CAAQMS stations and scores the held-out one, so `rmse_score` is a genuine unseen-station estimate (a documented reference RMSE is shown — flagged `estimated: true` — when the active bbox contains fewer than 4 stations). Panel 4 (`GET /api/validation/frame?t=`) **re-runs that holdout — or the in-bbox ground stations — for each timeline frame**, so the score follows the scrubber instead of staying pinned to one train-time number; a region with no independent truth (there is no keyless fine-resolution reference outside CAMS Europe) answers `available:false` with a `reason` and the panel says so plainly instead of quoting the benchmark region as if it validated the city on screen.
 7. **Serve** — FastAPI job API + Vite/Leaflet dual-map frontend; results exportable as NetCDF/GeoJSON/CSV/GeoTIFF.
 
 ### Fetching 1 km grids without tripping the upstream rate limit
@@ -258,6 +258,7 @@ whenever a reference exists).
 | `GET /api/export/geotiff` | GeoTIFF export (EPSG:4326, deflate) — needs `uv add rasterio` |
 | `GET /api/cities` | Indexed cities + bboxes for the searchable city selector |
 | `GET /api/validation/loso` | Leave-One-Station-Out cross-validation: `rmse_score`, per-station folds |
+| `GET /api/validation/frame?t=` | **Panel 4's per-frame score**: re-scores the unseen samples of the timeline frame `t` (`0..n-1` hour, `n`/negative = period mean). `source="reference"` (0.1° independent product) or `source="stations"` (ground monitors in the bbox) when local truth exists; otherwise `available:false` + `reason`, so another region's numbers are never passed off as local validation. Never 5xx |
 | `GET /api/forecast?preset=&city=` | 72-h NO₂ projection for Page 2: hourly live met, factors, stagnation, alerts |
 
 All long operations are jobs: they return `{job_id}` immediately and report
@@ -299,9 +300,10 @@ backend/
     features.py        23-feature matrix builder
     training.py        splits, fit, predict, conservation, metrics
     artifacts.py       meta/layers/NetCDF export
-    validation.py      station CSV validation
+    validation.py      station CSV validation + per-frame unseen-data scoring
   scripts/smoke.py     headless end-to-end test
   scripts/check_inspect.py  point-inspector vs painted-map consistency, every cached city
+  scripts/check_frame_validation.py  panel 4 scores each timeline frame honestly, every cached city
   scripts/preload_osm.py  prefetch a Geofabrik extract (`--list` for candidates)
   cache/, artifacts/   generated (git-ignored)
 frontend/
@@ -316,7 +318,7 @@ docs/                  pipeline & result screenshots
 
 - **Backend**: Python ≥ 3.13 managed by **uv only** (`uv sync`, `uv run …`) — never `pip install`. FastAPI app under `backend/src/backend/` with one module per pipeline stage (`src/` layout).
 - **Frontend**: **vanilla TypeScript + Vite** (no React or other framework), **Leaflet** for the synced dual maps, **OpenStreetMap** raster tiles as the keyless basemap (dark styling via CSS filter). The dev server proxies `/api` → `127.0.0.1:8000`.
-- **Checks**: `cd frontend && npm run build` is the quality gate (strict `tsc` + Vite bundle; no linter is configured). `uv run scripts/smoke.py <preset> <days>` verifies the ML pipeline end-to-end headlessly; `uv run scripts/check_inspect.py` proves the point inspector quotes the same frame the map paints, for every cached city (writes to a temp dir, so it never disturbs `artifacts/latest`).
+- **Checks**: `cd frontend && npm run build` is the quality gate (strict `tsc` + Vite bundle; no linter is configured). `uv run scripts/smoke.py <preset> <days>` verifies the ML pipeline end-to-end headlessly; `uv run scripts/check_inspect.py` proves the point inspector quotes the same frame the map paints, for every cached city, and `uv run scripts/check_frame_validation.py` proves panel 4 re-scores the *unseen* data for each timeline frame (varying metrics where independent truth exists, an honest "no local reference" state where it does not) — both write to a temp dir, so they never disturb `artifacts/latest`.
 - **Generated data** — `backend/cache/` and `backend/artifacts/` are git-ignored; always regenerate via Fetch/Train, never commit them.
 - **Regions** — the default preset is **Mumbai** (transfer mode: no local reference). London/Paris are the supervised-training benchmarks; train on one of those before Apply works elsewhere.
 

@@ -28,9 +28,11 @@ export function renderValidation(v: Validation | undefined): void {
   rmse.classList.toggle('estimated', !!v.estimated)
   rmse.classList.toggle('live', !v.estimated)
 
-  note.textContent = v.estimated
-    ? `${v.reason} · reference value`
-    : `${v.reason} · ${v.n_folds} held-out folds`
+  note.textContent =
+    (v.estimated ? `${v.reason} · reference value` : `${v.reason} · ${v.n_folds} held-out folds`) +
+    // LOSO scores period totals of period-mean station readings, so it is
+    // deliberately *not* re-scored per timeline frame (panel 4 is).
+    ' · period mean, not per timeline frame'
   note.title = v.reason
 }
 
