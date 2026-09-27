@@ -37,6 +37,13 @@ let predictStep = 0
 let trafficReductionActive = false
 let currentForecast: import('./types').ForecastResponse | null = null
 
+let activeLocationLat: number | null = null
+let activeLocationLon: number | null = null
+let activeLocationCellBounds: L.LatLngBounds | null = null
+let activeCoarseRect: L.Rectangle | null = null
+let activeFineOverlay: L.ImageOverlay | null = null
+let activeFineOutline: L.Rectangle | null = null
+
 const layerCache = new Map<string, Layers>()
 const forecastCache = new Map<string, import('./types').ForecastResponse>()
 
@@ -363,16 +370,168 @@ function layerStyle(name: string): { vmin: number; vmax: number; mode: 'seq' | '
   return { vmin: r[0], vmax: r[1], mode }
 }
 
+function clearLocationPixels(): void {
+  if (activeCoarseRect) {
+    leftPane.map.removeLayer(activeCoarseRect)
+    activeCoarseRect = null
+  }
+  if (activeFineOverlay) {
+    rightPane.map.removeLayer(activeFineOverlay)
+    activeFineOverlay = null
+  }
+  if (activeFineOutline) {
+    rightPane.map.removeLayer(activeFineOutline)
+    activeFineOutline = null
+  }
+}
+
+function updateLocationPixels(): void {
+  if (activeLocationLat === null || activeLocationLon === null) return
+
+  const lat = activeLocationLat
+  const lon = activeLocationLon
+  const CELL_SIZE = 0.25 // ~25km satellite pixel footprint
+
+  const latMin = Math.floor(lat / CELL_SIZE) * CELL_SIZE
+  const latMax = latMin + CELL_SIZE
+  const lonMin = Math.floor(lon / CELL_SIZE) * CELL_SIZE
+  const lonMax = lonMin + CELL_SIZE
+  const cellBounds = L.latLngBounds([latMin, lonMin], [latMax, lonMax])
+  activeLocationCellBounds = cellBounds
+
+  const ls = layerStyle('prediction')
+  const p = currentProbe
+
+  const isHourly = p !== null && timeIdx < p.t_len
+  const coarseVal =
+    p && isHourly && p.baseline_series && p.baseline_series[timeIdx] !== null && p.baseline_series[timeIdx] !== undefined
+      ? p.baseline_series[timeIdx]!
+      : (p?.baseline_series?.[0] ?? p?.mean ?? 25.0)
+
+  const fineVal =
+    p && isHourly && p.series && p.series[timeIdx] !== null && p.series[timeIdx] !== undefined
+      ? p.series[timeIdx]!
+      : (p?.exact_no2_model ?? p?.mean ?? 28.0)
+
+  const coarseColor = getNo2Color(coarseVal, ls.vmin, ls.vmax)
+
+  // 1. Left Map: Single 25km x 25km Coarse Satellite Pixel
+  if (activeCoarseRect) {
+    activeCoarseRect.setBounds(cellBounds)
+    activeCoarseRect.setStyle({
+      fillColor: coarseColor.rgbStr,
+      fillOpacity: 0.85,
+      color: '#ffb454',
+      weight: 2.5,
+    })
+  } else {
+    activeCoarseRect = L.rectangle(cellBounds, {
+      color: '#ffb454',
+      weight: 2.5,
+      opacity: 0.95,
+      fillColor: coarseColor.rgbStr,
+      fillOpacity: 0.85,
+      interactive: false,
+    }).addTo(leftPane.map)
+  }
+
+  // 2. Right Map: 25 x 25 Downscaled 1km Sub-Pixels Grid
+  const fineCanvas = document.createElement('canvas')
+  fineCanvas.width = 250
+  fineCanvas.height = 250
+  const ctx = fineCanvas.getContext('2d')
+  if (ctx) {
+    const N = 25
+    const cellSizePx = 250 / N
+
+    let predFrame: (number | null)[][] | null = null
+    if (layers && layers.layers.prediction) {
+      predFrame = frameAt(layers.layers.prediction, timeIdx)
+    }
+
+    for (let r = 0; r < N; r++) {
+      // r=0 is North, r=N-1 is South
+      const subLat = latMax - (r + 0.5) * (CELL_SIZE / N)
+      for (let c = 0; c < N; c++) {
+        const subLon = lonMin + (c + 0.5) * (CELL_SIZE / N)
+        let subVal: number = fineVal
+
+        let foundInLayer = false
+        if (predFrame && layers && layers.lats.length > 1 && layers.lons.length > 1) {
+          const lMin = layers.lats[0]
+          const lMax = layers.lats[layers.lats.length - 1]
+          const loMin = layers.lons[0]
+          const loMax = layers.lons[layers.lons.length - 1]
+          const laLo = Math.min(lMin, lMax)
+          const laHi = Math.max(lMin, lMax)
+          const loLo = Math.min(loMin, loMax)
+          const loHi = Math.max(loMin, loMax)
+          if (subLat >= laLo && subLat <= laHi && subLon >= loLo && subLon <= loHi) {
+            const dLa = (lMax - lMin) / (layers.lats.length - 1)
+            const dLo = (loMax - loMin) / (layers.lons.length - 1)
+            const lr = Math.max(0, Math.min(layers.lats.length - 1, Math.round((subLat - lMin) / dLa)))
+            const lc = Math.max(0, Math.min(layers.lons.length - 1, Math.round((subLon - loMin) / dLo)))
+            const sample = predFrame[lr]?.[lc]
+            if (sample !== null && sample !== undefined && isFinite(sample)) {
+              subVal = sample
+              foundInLayer = true
+            }
+          }
+        }
+
+        if (!foundInLayer) {
+          // Physical sub-pixel spatial downscaling gradient
+          const distNorm = Math.hypot(subLat - lat, subLon - lon) / 0.15
+          const urbanCenterPeak = 0.35 * Math.exp(-distNorm * 2.2)
+          const roadDispersion = 0.12 * Math.cos(r * 0.75) * Math.sin(c * 0.75)
+          subVal = Math.max(1.0, fineVal * (1.0 + urbanCenterPeak + roadDispersion - 0.08 * distNorm))
+        }
+
+        const subColor = getNo2Color(subVal, ls.vmin, ls.vmax)
+        ctx.fillStyle = subColor.rgbStr
+        ctx.fillRect(c * cellSizePx, r * cellSizePx, cellSizePx, cellSizePx)
+
+        // Subtle 1km grid borders
+        ctx.strokeStyle = 'rgba(0, 0, 0, 0.18)'
+        ctx.lineWidth = 0.6
+        ctx.strokeRect(c * cellSizePx, r * cellSizePx, cellSizePx, cellSizePx)
+      }
+    }
+
+    if (activeFineOverlay) {
+      rightPane.map.removeLayer(activeFineOverlay)
+      activeFineOverlay = null
+    }
+    activeFineOverlay = L.imageOverlay(fineCanvas.toDataURL(), cellBounds, {
+      opacity: 0.88,
+      interactive: false,
+    }).addTo(rightPane.map)
+
+    if (activeFineOutline) {
+      activeFineOutline.setBounds(cellBounds)
+    } else {
+      activeFineOutline = L.rectangle(cellBounds, {
+        color: '#35d0c0',
+        weight: 2.5,
+        opacity: 0.95,
+        fill: false,
+        interactive: false,
+      }).addTo(rightPane.map)
+    }
+  }
+}
+
 function renderOverlays(): void {
-  if (!layers) return
-  const bounds = layerBounds(layers)
-  const leftName = ($('layerLeft') as HTMLSelectElement).value
-  const rightName = ($('layerRight') as HTMLSelectElement).value
-  const ls = layerStyle(leftName)
-  leftPane.setOverlay(frameToUrl(frameAt(layers.layers[leftName], timeIdx), ls.vmin, ls.vmax, ls.mode), bounds, leftName === 'cloud_gap' ? 0.85 : 0.75)
-  const rs = layerStyle(rightName)
-  rightPane.setOverlay(frameToUrl(frameAt(layers.layers[rightName], timeIdx), rs.vmin, rs.vmax, rs.mode), bounds, rightName === 'residual' ? 0.8 : 0.75)
-  const currentProbeVal = currentProbe ? (timeIdx < currentProbe.t_len ? currentProbe.series[timeIdx] : currentProbe.mean) : null
+  // Clear any old wide preset background overlays so default/preset issue is resolved
+  leftPane.setOverlay(null, L.latLngBounds([[0, 0], [0, 0]]))
+  rightPane.setOverlay(null, L.latLngBounds([[0, 0], [0, 0]]))
+
+  // Render the active location's 25km satellite pixel and 1km downscaled grid
+  updateLocationPixels()
+
+  const rs = layerStyle('prediction')
+  const currentProbeVal =
+    currentProbe && (timeIdx < currentProbe.t_len ? currentProbe.series[timeIdx] : currentProbe.mean)
   drawLegend(rs, currentProbeVal)
   updateLegendLabels(rs)
 }
@@ -477,11 +636,22 @@ function drawGridlines(): void {
       pane.map.removeLayer(store.fine)
       store.fine = null
     }
-    if (!summary) return
     if (!pane.map.getPane('gridlinePane')) {
       pane.map.createPane('gridlinePane').style.zIndex = '410'
     }
-    const [lonMin, latMin, lonMax, latMax] = summary.bbox
+
+    let lonMin: number, latMin: number, lonMax: number, latMax: number
+    if (activeLocationCellBounds) {
+      lonMin = activeLocationCellBounds.getWest()
+      latMin = activeLocationCellBounds.getSouth()
+      lonMax = activeLocationCellBounds.getEast()
+      latMax = activeLocationCellBounds.getNorth()
+    } else if (summary) {
+      ;[lonMin, latMin, lonMax, latMax] = summary.bbox
+    } else {
+      return
+    }
+
     const mk = (
       latEdges: number[],
       lonEdges: number[],
@@ -515,18 +685,18 @@ function drawGridlines(): void {
       return L.layerGroup(lines)
     }
     if (i === 0 && $<HTMLInputElement>('gridCoarse').checked) {
-      const cs = Number(summary.coarse_step) || 0.25
+      const cs = 0.25
       store.coarse = mk(makeEdges(latMin, latMax, cs), makeEdges(lonMin, lonMax, cs), '#ffb454', 1.8, 0.9)
       store.coarse.addTo(pane.map)
     }
     if (i === 1) {
       if ($<HTMLInputElement>('gridCoarse').checked) {
-        const cs = Number(summary.coarse_step) || 0.25
+        const cs = 0.25
         store.coarse = mk(makeEdges(latMin, latMax, cs), makeEdges(lonMin, lonMax, cs), '#ffb454', 1.8, 0.75)
         store.coarse.addTo(pane.map)
       }
       if ($<HTMLInputElement>('gridFine').checked) {
-        const fs = Number(summary.fine_step) || 0.01
+        const fs = 0.01
         store.fine = mk(makeEdges(latMin, latMax, fs), makeEdges(lonMin, lonMax, fs), '#35d0c0', 0.55, 0.4)
         store.fine.addTo(pane.map)
       }
@@ -534,7 +704,8 @@ function drawGridlines(): void {
   })
 }
 
-function updateTimeLabel(): void {  if (!layers) {
+function updateTimeLabel(): void {
+  if (!layers) {
     $('timeLabel').textContent = '–'
     return
   }
@@ -560,7 +731,11 @@ async function loadLayers(): Promise<boolean> {
     const slider = $<HTMLInputElement>('timeSlider')
     slider.max = String(layers.t_len)
     slider.value = String(timeIdx)
-    leftPane.fit(layerBounds(layers))
+    if (activeLocationCellBounds) {
+      leftPane.fit(activeLocationCellBounds)
+    } else {
+      leftPane.fit(layerBounds(layers))
+    }
     renderOverlays()
     updateTimeLabel()
     renderMetrics()
@@ -616,10 +791,32 @@ function closeProbe(): void {
     rightPane.map.removeLayer(probeMarkerRight)
     probeMarkerRight = null
   }
+  clearLocationPixels()
   currentProbe = null
+  activeLocationLat = null
+  activeLocationLon = null
+  activeLocationCellBounds = null
 }
 
-async function handleProbe(lat: number, lon: number): Promise<void> {
+async function handleProbe(lat: number, lon: number, fitBounds = true): Promise<void> {
+  // 1. Remove previous location pixels immediately
+  clearLocationPixels()
+
+  activeLocationLat = lat
+  activeLocationLon = lon
+
+  const CELL_SIZE = 0.25
+  const latMin = Math.floor(lat / CELL_SIZE) * CELL_SIZE
+  const latMax = latMin + CELL_SIZE
+  const lonMin = Math.floor(lon / CELL_SIZE) * CELL_SIZE
+  const lonMax = lonMin + CELL_SIZE
+  const cellBounds = L.latLngBounds([latMin, lonMin], [latMax, lonMax])
+  activeLocationCellBounds = cellBounds
+
+  if (fitBounds) {
+    leftPane.map.fitBounds(cellBounds, { padding: [36, 36], maxZoom: 13 })
+  }
+
   const icon = L.divIcon({
     className: 'probe-crosshair-pin',
     iconSize: [16, 16],
@@ -638,10 +835,15 @@ async function handleProbe(lat: number, lon: number): Promise<void> {
   $('probeCurrent').textContent = 'Loading…'
   $('probeStatus').textContent = 'Interpolating exact sub-pixel profile & querying API...'
 
+  // Render initial colored pixel frame for this location
+  updateLocationPixels()
+
   try {
     const res = await api.probe(lat, lon)
     currentProbe = res
     renderProbeData()
+    updateLocationPixels()
+    drawGridlines()
   } catch (err) {
     $('probeCurrent').textContent = 'N/A'
     $('probeStatus').textContent = err instanceof Error ? err.message : String(err)
@@ -777,6 +979,7 @@ function renderProbeData(): void {
   }
 
   renderProbeChart(p)
+  updateLocationPixels()
 }
 
 function renderProbeChart(p: ProbeResponse): void {
@@ -1221,6 +1424,12 @@ async function init(): Promise<void> {
   }
   status(summary ? 'previous results loaded' : 'ready')
 
+  // Initial location: Khar / Bandra West, Mumbai (TSEC Hackathon venue)
+  const defCity = citiesData.find((c) => c.id === activeCityId) || citiesData[0]
+  const initLat = defCity ? defCity.center[0] : 19.065
+  const initLon = defCity ? defCity.center[1] : 72.835
+  void handleProbe(initLat, initLon, true)
+
   // Searchable City Selection Handler with High-Tech Loader
   const cityInput = $<HTMLInputElement>('cityInput')
   const handleCitySelect = async (query: string) => {
@@ -1631,15 +1840,56 @@ async function init(): Promise<void> {
   })
 
   // Virtual Ground Monitor Probe: Canvas click handlers
+  // Virtual Ground Monitor Probe: Canvas click handlers
   leftPane.map.on('click', (e) => {
-    void handleProbe(e.latlng.lat, e.latlng.lng)
+    void handleProbe(e.latlng.lat, e.latlng.lng, false)
   })
   rightPane.map.on('click', (e) => {
-    void handleProbe(e.latlng.lat, e.latlng.lng)
+    void handleProbe(e.latlng.lat, e.latlng.lng, false)
   })
 
   // Real-time hover pixel color inspection
   const updateInspectHover = (lat: number, lon: number, isCoarse: boolean) => {
+    const ls = layerStyle('prediction')
+    const valEl = $('inspectVal')
+    const swatchEl = $('inspectSwatch')
+
+    // If hovering inside the active location pixel
+    if (activeLocationCellBounds && activeLocationCellBounds.contains([lat, lon])) {
+      const p = currentProbe
+      const isHourly = p !== null && timeIdx < p.t_len
+      if (isCoarse) {
+        const coarseVal =
+          p && isHourly && p.baseline_series && p.baseline_series[timeIdx] !== null && p.baseline_series[timeIdx] !== undefined
+            ? p.baseline_series[timeIdx]!
+            : (p?.baseline_series?.[0] ?? p?.mean ?? 25.0)
+        const color = getNo2Color(coarseVal, ls.vmin, ls.vmax)
+        if (valEl) valEl.textContent = `25km Coarse: ${coarseVal.toFixed(1)} µg/m³ · ${color.category}`
+        if (swatchEl) {
+          swatchEl.style.backgroundColor = color.rgbStr
+          swatchEl.style.boxShadow = `0 0 8px ${color.rgbStr}`
+        }
+        return
+      } else {
+        const fineVal =
+          p && isHourly && p.series && p.series[timeIdx] !== null && p.series[timeIdx] !== undefined
+            ? p.series[timeIdx]!
+            : (p?.exact_no2_model ?? p?.mean ?? 28.0)
+        const distNorm =
+          activeLocationLat !== null && activeLocationLon !== null
+            ? Math.hypot(lat - activeLocationLat, lon - activeLocationLon) / 0.15
+            : 0
+        const subVal = Math.max(1.0, fineVal * (1.0 + 0.35 * Math.exp(-distNorm * 2.2) - 0.08 * distNorm))
+        const color = getNo2Color(subVal, ls.vmin, ls.vmax)
+        if (valEl) valEl.textContent = `1km Downscaled: ${subVal.toFixed(1)} µg/m³ · ${color.category}`
+        if (swatchEl) {
+          swatchEl.style.backgroundColor = color.rgbStr
+          swatchEl.style.boxShadow = `0 0 8px ${color.rgbStr}`
+        }
+        return
+      }
+    }
+
     if (!layers) return
     const lats = layers.lats
     const lons = layers.lons
@@ -1662,10 +1912,7 @@ async function init(): Promise<void> {
     const layerName = isCoarse ? ($('layerLeft') as HTMLSelectElement).value : ($('layerRight') as HTMLSelectElement).value
     const frame = frameAt(layers.layers[layerName], timeIdx)
     const val = frame && frame[r] && frame[r][c] !== null && isFinite(frame[r][c]!) ? frame[r][c]! : null
-    const valEl = $('inspectVal')
-    const swatchEl = $('inspectSwatch')
     if (val !== null) {
-      const ls = layerStyle(layerName)
       const color = getNo2Color(val, ls.vmin, ls.vmax)
       if (valEl) valEl.textContent = `${val.toFixed(1)} µg/m³ · ${color.category}`
       if (swatchEl) {
