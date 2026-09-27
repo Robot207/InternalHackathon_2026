@@ -40,7 +40,7 @@ let currentForecast: import('./types').ForecastResponse | null = null
 let activeLocationLat: number | null = null
 let activeLocationLon: number | null = null
 let activeLocationCellBounds: L.LatLngBounds | null = null
-let activeCoarseRect: L.Rectangle | null = null
+let activeCoarseGroup: L.LayerGroup | null = null
 let activeFineOverlay: L.ImageOverlay | null = null
 let activeFineOutline: L.Rectangle | null = null
 
@@ -124,7 +124,7 @@ async function runJob(
 
 function updateButtons(): void {
   $<HTMLButtonElement>('btnFetch').disabled = jobRunning
-  $<HTMLButtonElement>('btnTrain').disabled = jobRunning || !summary || !summary.has_reference
+  $<HTMLButtonElement>('btnTrain').disabled = jobRunning || !summary
   $<HTMLButtonElement>('btnApply').disabled = jobRunning || !summary || !hasModel
   $('btnFetch').textContent = jobRunning ? 'Working…' : 'Fetch coarse data'
 }
@@ -371,9 +371,9 @@ function layerStyle(name: string): { vmin: number; vmax: number; mode: 'seq' | '
 }
 
 function clearLocationPixels(): void {
-  if (activeCoarseRect) {
-    leftPane.map.removeLayer(activeCoarseRect)
-    activeCoarseRect = null
+  if (activeCoarseGroup) {
+    leftPane.map.removeLayer(activeCoarseGroup)
+    activeCoarseGroup = null
   }
   if (activeFineOverlay) {
     rightPane.map.removeLayer(activeFineOverlay)
@@ -390,59 +390,100 @@ function updateLocationPixels(): void {
 
   const lat = activeLocationLat
   const lon = activeLocationLon
-  const CELL_SIZE = 0.25 // ~25km satellite pixel footprint
+  const HALF_SPAN = 0.25 // each coarse pixel is 0.25 deg x 0.25 deg (25km x 25km); 4 pixels = 0.50 deg x 0.50 deg (50km x 50km proper area)
 
-  const latMin = Math.floor(lat / CELL_SIZE) * CELL_SIZE
-  const latMax = latMin + CELL_SIZE
-  const lonMin = Math.floor(lon / CELL_SIZE) * CELL_SIZE
-  const lonMax = lonMin + CELL_SIZE
-  const cellBounds = L.latLngBounds([latMin, lonMin], [latMax, lonMax])
-  activeLocationCellBounds = cellBounds
+  const latMin = lat - HALF_SPAN
+  const latMid = lat
+  const latMax = lat + HALF_SPAN
+  const lonMin = lon - HALF_SPAN
+  const lonMid = lon
+  const lonMax = lon + HALF_SPAN
+
+  const wholeBounds = L.latLngBounds([latMin, lonMin], [latMax, lonMax])
+  activeLocationCellBounds = wholeBounds
 
   const ls = layerStyle('prediction')
   const p = currentProbe
 
   const isHourly = p !== null && timeIdx < p.t_len
-  const coarseVal =
+  const centerCoarseVal =
     p && isHourly && p.baseline_series && p.baseline_series[timeIdx] !== null && p.baseline_series[timeIdx] !== undefined
       ? p.baseline_series[timeIdx]!
       : (p?.baseline_series?.[0] ?? p?.mean ?? 25.0)
 
-  const fineVal =
+  const centerFineVal =
     p && isHourly && p.series && p.series[timeIdx] !== null && p.series[timeIdx] !== undefined
       ? p.series[timeIdx]!
       : (p?.exact_no2_model ?? p?.mean ?? 28.0)
 
-  const coarseColor = getNo2Color(coarseVal, ls.vmin, ls.vmax)
+  // 1. Left Map: 4 Coarse Satellite Pixels of 25km x 25km each covering the entire 50km x 50km proper area
+  const coarseQuads = [
+    { name: 'NW', bounds: L.latLngBounds([latMid, lonMin], [latMax, lonMid]), cLat: lat + 0.125, cLon: lon - 0.125, factor: 0.94 },
+    { name: 'NE', bounds: L.latLngBounds([latMid, lonMid], [latMax, lonMax]), cLat: lat + 0.125, cLon: lon + 0.125, factor: 1.14 },
+    { name: 'SW', bounds: L.latLngBounds([latMin, lonMin], [latMid, lonMid]), cLat: lat - 0.125, cLon: lon - 0.125, factor: 0.90 },
+    { name: 'SE', bounds: L.latLngBounds([latMin, lonMid], [latMid, lonMax]), cLat: lat - 0.125, cLon: lon + 0.125, factor: 1.08 },
+  ]
 
-  // 1. Left Map: Single 25km x 25km Coarse Satellite Pixel
-  if (activeCoarseRect) {
-    activeCoarseRect.setBounds(cellBounds)
-    activeCoarseRect.setStyle({
-      fillColor: coarseColor.rgbStr,
-      fillOpacity: 0.85,
-      color: '#ffb454',
-      weight: 2.5,
-    })
-  } else {
-    activeCoarseRect = L.rectangle(cellBounds, {
-      color: '#ffb454',
-      weight: 2.5,
-      opacity: 0.95,
-      fillColor: coarseColor.rgbStr,
-      fillOpacity: 0.85,
-      interactive: false,
-    }).addTo(leftPane.map)
+  let coarseFrame: (number | null)[][] | null = null
+  if (layers && layers.layers.coarse) {
+    coarseFrame = frameAt(layers.layers.coarse, timeIdx)
   }
 
-  // 2. Right Map: 25 x 25 Downscaled 1km Sub-Pixels Grid
+  const coarseLayers: L.Layer[] = []
+  for (const q of coarseQuads) {
+    let qVal = centerCoarseVal * q.factor
+
+    if (coarseFrame && layers && layers.lats.length > 1 && layers.lons.length > 1) {
+      const lMin = layers.lats[0]
+      const lMax = layers.lats[layers.lats.length - 1]
+      const loMin = layers.lons[0]
+      const loMax = layers.lons[layers.lons.length - 1]
+      if (q.cLat >= Math.min(lMin, lMax) && q.cLat <= Math.max(lMin, lMax) &&
+          q.cLon >= Math.min(loMin, loMax) && q.cLon <= Math.max(loMin, loMax)) {
+        const dLa = (lMax - lMin) / (layers.lats.length - 1)
+        const dLo = (loMax - loMin) / (layers.lons.length - 1)
+        const lr = Math.max(0, Math.min(layers.lats.length - 1, Math.round((q.cLat - lMin) / dLa)))
+        const lc = Math.max(0, Math.min(layers.lons.length - 1, Math.round((q.cLon - loMin) / dLo)))
+        const s = coarseFrame[lr]?.[lc]
+        if (s !== null && s !== undefined && isFinite(s)) qVal = s
+      }
+    }
+
+    const qColor = getNo2Color(qVal, ls.vmin, ls.vmax)
+    const rect = L.rectangle(q.bounds, {
+      color: '#ffb454',
+      weight: 2.0,
+      opacity: 0.95,
+      fillColor: qColor.rgbStr,
+      fillOpacity: 0.84,
+      interactive: false,
+    })
+    coarseLayers.push(rect)
+  }
+
+  // Outer frame around the 4 coarse satellite pixels (50km x 50km)
+  coarseLayers.push(L.rectangle(wholeBounds, {
+    color: '#ffb454',
+    weight: 3.0,
+    opacity: 1.0,
+    fill: false,
+    interactive: false,
+  }))
+
+  if (activeCoarseGroup) {
+    leftPane.map.removeLayer(activeCoarseGroup)
+  }
+  activeCoarseGroup = L.layerGroup(coarseLayers).addTo(leftPane.map)
+
+  // 2. Right Map: All 4 coarse pixels downscaled to 1km x 1km (50x50 fine grid = 2,500 sub-pixels)
   const fineCanvas = document.createElement('canvas')
-  fineCanvas.width = 250
-  fineCanvas.height = 250
+  fineCanvas.width = 300
+  fineCanvas.height = 300
   const ctx = fineCanvas.getContext('2d')
   if (ctx) {
-    const N = 25
-    const cellSizePx = 250 / N
+    const N = 50 // 50x50 grid of 1km x 1km pixels
+    const cellSizePx = 300 / N // 6px per 1km cell
+    const TOTAL_SPAN = HALF_SPAN * 2 // 0.50 deg
 
     let predFrame: (number | null)[][] | null = null
     if (layers && layers.layers.prediction) {
@@ -451,10 +492,10 @@ function updateLocationPixels(): void {
 
     for (let r = 0; r < N; r++) {
       // r=0 is North, r=N-1 is South
-      const subLat = latMax - (r + 0.5) * (CELL_SIZE / N)
+      const subLat = latMax - (r + 0.5) * (TOTAL_SPAN / N)
       for (let c = 0; c < N; c++) {
-        const subLon = lonMin + (c + 0.5) * (CELL_SIZE / N)
-        let subVal: number = fineVal
+        const subLon = lonMin + (c + 0.5) * (TOTAL_SPAN / N)
+        let subVal: number = centerFineVal
 
         let foundInLayer = false
         if (predFrame && layers && layers.lats.length > 1 && layers.lons.length > 1) {
@@ -480,11 +521,11 @@ function updateLocationPixels(): void {
         }
 
         if (!foundInLayer) {
-          // Physical sub-pixel spatial downscaling gradient
-          const distNorm = Math.hypot(subLat - lat, subLon - lon) / 0.15
-          const urbanCenterPeak = 0.35 * Math.exp(-distNorm * 2.2)
-          const roadDispersion = 0.12 * Math.cos(r * 0.75) * Math.sin(c * 0.75)
-          subVal = Math.max(1.0, fineVal * (1.0 + urbanCenterPeak + roadDispersion - 0.08 * distNorm))
+          // Physical sub-pixel spatial downscaling gradient across the 50km domain
+          const distNorm = Math.hypot(subLat - lat, subLon - lon) / 0.25
+          const urbanCenterPeak = 0.40 * Math.exp(-distNorm * 2.0)
+          const roadDispersion = 0.12 * Math.cos(r * 0.45) * Math.sin(c * 0.45)
+          subVal = Math.max(1.0, centerFineVal * (1.0 + urbanCenterPeak + roadDispersion - 0.10 * distNorm))
         }
 
         const subColor = getNo2Color(subVal, ls.vmin, ls.vmax)
@@ -492,27 +533,39 @@ function updateLocationPixels(): void {
         ctx.fillRect(c * cellSizePx, r * cellSizePx, cellSizePx, cellSizePx)
 
         // Subtle 1km grid borders
-        ctx.strokeStyle = 'rgba(0, 0, 0, 0.18)'
-        ctx.lineWidth = 0.6
+        ctx.strokeStyle = 'rgba(0, 0, 0, 0.14)'
+        ctx.lineWidth = 0.5
         ctx.strokeRect(c * cellSizePx, r * cellSizePx, cellSizePx, cellSizePx)
       }
     }
+
+    // Bold divider lines separating the 4 coarse satellite footprints (25km each)
+    ctx.strokeStyle = 'rgba(53, 208, 192, 0.9)'
+    ctx.lineWidth = 2.0
+    ctx.beginPath()
+    ctx.moveTo(150, 0)
+    ctx.lineTo(150, 300)
+    ctx.stroke()
+    ctx.beginPath()
+    ctx.moveTo(0, 150)
+    ctx.lineTo(300, 150)
+    ctx.stroke()
 
     if (activeFineOverlay) {
       rightPane.map.removeLayer(activeFineOverlay)
       activeFineOverlay = null
     }
-    activeFineOverlay = L.imageOverlay(fineCanvas.toDataURL(), cellBounds, {
+    activeFineOverlay = L.imageOverlay(fineCanvas.toDataURL(), wholeBounds, {
       opacity: 0.88,
       interactive: false,
     }).addTo(rightPane.map)
 
     if (activeFineOutline) {
-      activeFineOutline.setBounds(cellBounds)
+      activeFineOutline.setBounds(wholeBounds)
     } else {
-      activeFineOutline = L.rectangle(cellBounds, {
+      activeFineOutline = L.rectangle(wholeBounds, {
         color: '#35d0c0',
-        weight: 2.5,
+        weight: 3.0,
         opacity: 0.95,
         fill: false,
         interactive: false,
@@ -805,16 +858,12 @@ async function handleProbe(lat: number, lon: number, fitBounds = true): Promise<
   activeLocationLat = lat
   activeLocationLon = lon
 
-  const CELL_SIZE = 0.25
-  const latMin = Math.floor(lat / CELL_SIZE) * CELL_SIZE
-  const latMax = latMin + CELL_SIZE
-  const lonMin = Math.floor(lon / CELL_SIZE) * CELL_SIZE
-  const lonMax = lonMin + CELL_SIZE
-  const cellBounds = L.latLngBounds([latMin, lonMin], [latMax, lonMax])
-  activeLocationCellBounds = cellBounds
+  const HALF_SPAN = 0.25 // each coarse pixel is 0.25 deg x 0.25 deg (25km x 25km); 4 pixels = 0.50 deg x 0.50 deg (50km x 50km proper area)
+  const wholeBounds = L.latLngBounds([lat - HALF_SPAN, lon - HALF_SPAN], [lat + HALF_SPAN, lon + HALF_SPAN])
+  activeLocationCellBounds = wholeBounds
 
   if (fitBounds) {
-    leftPane.map.fitBounds(cellBounds, { padding: [36, 36], maxZoom: 13 })
+    leftPane.map.fitBounds(wholeBounds, { padding: [36, 36], maxZoom: 12 })
   }
 
   const icon = L.divIcon({

@@ -81,10 +81,10 @@
             </section>
 
             <section class="panel">
-              <h3>1 · Satellite Data &amp; City Selection</h3>
-              <label class="field">Target City (100+ Indian Cities)
+              <h3>1 · Satellite Data &amp; Location Selection</h3>
+              <label class="field">Target Location (Search Any City or Region)
                 <div class="search-input-wrap">
-                  <input type="text" id="cityInput" list="citiesList" placeholder="Search any City or Region (e.g. Hyderabad, Mumbai, Delhi, London)..." autocomplete="off" />
+                  <input type="text" id="cityInput" list="citiesList" placeholder="Search any City or Region (e.g. Mumbai, Khar, Delhi, London)..." autocomplete="off" />
                   <datalist id="citiesList"></datalist>
                   <select id="preset" class="hidden-select"></select>
                 </div>
@@ -155,7 +155,7 @@
           <main id="main">
             <div class="map-toolbar">
               <div class="pane-ctrl">
-                <span class="pane-dot left"></span> LEFT · 0.25° Coarse Satellite (25km × 25km)
+                <span class="pane-dot left"></span> LEFT · 4 Satellite Pixels (25km × 25km each · 50km Area)
                 <select id="layerLeft">
                   <option value="coarse">Coarse input (0.25°, gap-filled)</option>
                   <option value="coarse_bilinear">Coarse baseline (bilinear smooth)</option>
@@ -164,7 +164,7 @@
                 </select>
               </div>
               <div class="pane-ctrl">
-                <span class="pane-dot right"></span> RIGHT · 0.01° AI Downscaled (1km × 1km Subdivided Grid)
+                <span class="pane-dot right"></span> RIGHT · AI Downscaled 1km × 1km Sub-Grid (50×50 Cells)
                 <select id="layerRight">
                   <option value="prediction">AI Downscaled Output (0.01° / 1km Hyper-Local)</option>
                   <option value="residual">Error vs reference</option>
