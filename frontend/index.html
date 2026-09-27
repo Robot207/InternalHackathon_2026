@@ -97,9 +97,13 @@
                   <input type="date" id="endDate" />
                 </label>
               </div>
-              <label class="field">Cloud cutoff (%)
-                <input type="number" id="cloudThreshold" min="0" max="100" value="60" />
-              </label>
+              <div class="field">
+                <span style="font-size: 11px; color: #8a99ad; display: block; margin-bottom: 4px;">Cloud cutoff (%)</span>
+                <div style="background: rgba(14, 20, 27, 0.8); border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 4px; padding: 6px 10px; font-size: 12px; color: #35d0c0; font-weight: 600;">
+                  60% (Optimal Cloud Filtering)
+                </div>
+                <input type="hidden" id="cloudThreshold" value="60" />
+              </div>
               <button id="btnFetch" class="primary">Fetch coarse data</button>
               <div id="dataInfo" class="info">no dataset loaded</div>
             </section>
@@ -151,7 +155,7 @@
           <main id="main">
             <div class="map-toolbar">
               <div class="pane-ctrl">
-                <span class="pane-dot left"></span> LEFT · raw satellite pixel
+                <span class="pane-dot left"></span> LEFT · 0.25° Coarse Satellite (25km × 25km)
                 <select id="layerLeft">
                   <option value="coarse">Coarse input (0.25°, gap-filled)</option>
                   <option value="coarse_bilinear">Coarse baseline (bilinear smooth)</option>
@@ -160,7 +164,7 @@
                 </select>
               </div>
               <div class="pane-ctrl">
-                <span class="pane-dot right"></span> RIGHT · our model
+                <span class="pane-dot right"></span> RIGHT · 0.01° AI Downscaled (1km × 1km Subdivided Grid)
                 <select id="layerRight">
                   <option value="prediction">AI Downscaled Output (0.01° / 1km Hyper-Local)</option>
                   <option value="residual">Error vs reference</option>
@@ -207,11 +211,6 @@
                     <div id="probeRange" class="b">min: -- · max: --</div>
                   </div>
                   <div class="probe-card">
-                    <div class="k">Atmospheric Inversion</div>
-                    <div id="probeVcd" class="v">--</div>
-                    <div id="probePblh" class="b">VCD (µmol/m²) · PBLH: -- m</div>
-                  </div>
-                  <div class="probe-card">
                     <div class="k">Physical Ground Station</div>
                     <div id="probeStation" class="v">--</div>
                     <div id="probeStationDist" class="b">Nearest physical monitor</div>
@@ -243,106 +242,106 @@
       <div id="pagePredict" class="page-view hidden">
         <div class="predict-layout">
           <aside class="predict-sidebar">
-            <div class="panel">
-              <div class="panel-header-row">
-                <h3>Predictive Forecasting</h3>
-                <span class="live-pulse-badge">LIVE AI</span>
-              </div>
-              <div class="predict-city-card">
-                <span class="p-sub">Target Region</span>
-                <strong id="predictCityDisplay" class="p-city">Mumbai, Maharashtra</strong>
-                <span id="predictCityCoord" class="p-coord">19.0760°N, 72.8777°E · Maharashtra</span>
-              </div>
-              <p class="hint">Physics-informed spatiotemporal LightGBM downscaling coupled with live ECMWF & CAMS boundary layer dynamics.</p>
-            </div>
-
-            <!-- What-If Simulator Panel -->
+            <!-- WHAT-IF SIMULATOR Panel -->
             <section class="panel what-if-panel">
               <div class="panel-header-row">
-                <h3>What-If Simulator</h3>
-                <span class="active-badge">Policy Mode</span>
+                <h3 style="color: #35d0c0; margin: 0; font-size: 11px; text-transform: uppercase; letter-spacing: 0.8px;">WHAT-IF SIMULATOR</h3>
               </div>
-              <label class="what-if-control">
+              <label class="what-if-control" style="margin-top: 8px;">
                 <input type="checkbox" id="trafficDropCheck" />
-                <span class="control-label"><strong>Simulate 40% Traffic Drop</strong></span>
+                <span class="control-label" style="font-size: 12px; font-weight: 600;">Simulate 40% Traffic Drop</span>
               </label>
-              <p class="hint">Simulates urban traffic rationing (Odd-Even / Congestion pricing). Reduces vehicular NO₂ emission proxies along primary corridors.</p>
-              <div id="trafficSimOutput" class="sim-output">
-                <div class="sim-row">
-                  <span>Emission Delta:</span>
-                  <span id="simDelta" class="sim-val neutral">0.0% (Baseline)</span>
-                </div>
-                <div class="sim-row">
-                  <span>Estimated NO₂ Reduction:</span>
-                  <span id="simReduction" class="sim-val neutral">0.0 µg/m³</span>
-                </div>
+              <p class="hint" style="margin: 8px 0 6px 0; font-size: 11px; color: #8a99ad; line-height: 1.4;">
+                Applies a GRAP-style vehicular intervention to the forecast field so you can compare business-as-usual against reduced traffic emissions.
+              </p>
+              <div id="trafficSimScenario" style="font-size: 11px; color: #35d0c0; font-family: Consolas, monospace; background: rgba(0,0,0,0.3); padding: 5px 8px; border-radius: 4px; border: 1px solid rgba(53,208,192,0.2);">
+                scenario: business as usual &rarr; <span id="simProjectedNo2">--</span> &mu;g/m&sup3;
               </div>
             </section>
 
-            <!-- Forecast Diagnostics Panel -->
+            <!-- FORECAST DRIVERS Panel -->
             <section class="panel">
-              <h3>Atmospheric Diagnostics</h3>
-              <div class="val-metric-row">
-                <span class="v-label">Forecast NO₂:</span>
-                <strong id="forecastNo2Val" class="v-val text-score">-- µg/m³</strong>
+              <h3 style="color: #35d0c0; margin: 0 0 8px 0; font-size: 11px; text-transform: uppercase; letter-spacing: 0.8px;">FORECAST DRIVERS</h3>
+              <div class="driver-list" style="display: flex; flex-direction: column; gap: 4px; font-size: 11.5px;">
+                <div class="val-metric-row"><span class="v-label">Horizon:</span> <strong id="driverHorizon" class="v-val text-accent">Now</strong></div>
+                <div class="val-metric-row"><span class="v-label">Wind:</span> <span id="driverWind" class="v-val">-- m/s from --</span></div>
+                <div class="val-metric-row"><span class="v-label">Humidity:</span> <span id="driverHumidity" class="v-val">-- %</span></div>
+                <div class="val-metric-row"><span class="v-label">Boundary layer:</span> <span id="driverPblh" class="v-val">-- m</span></div>
+                <div class="val-metric-row"><span class="v-label">Rain:</span> <span id="driverRain" class="v-val">0.00 mm/h &middot; cloud -- %</span></div>
+                <div class="val-metric-row"><span class="v-label">Temperature:</span> <span id="driverTemp" class="v-val">-- &deg;C</span></div>
+                <div class="val-metric-row"><span class="v-label">Ventilation:</span> <span id="driverVentilation" class="v-val">moderate</span></div>
+                <div class="val-metric-row"><span class="v-label">Stagnation index:</span> <span id="driverStagnation" class="v-val text-accent">--</span></div>
+                <div class="val-metric-row"><span class="v-label">Projected mean:</span> <strong id="driverMean" class="v-val text-score">-- &mu;g/m&sup3;</strong></div>
               </div>
-              <div class="val-metric-row">
-                <span class="v-label">Surface Wind:</span>
-                <span id="forecastWindVal" class="v-val">-- km/h</span>
+              <div style="margin-top: 10px; padding-top: 8px; border-top: 1px solid rgba(255,255,255,0.06); font-size: 10px; color: #6d7b8d; display: flex; flex-direction: column; gap: 3px;">
+                <div id="driverBaseline">baseline -- &mu;g/m&sup3; &middot; mean of the latest analysis frame</div>
+                <div>met: Open-Meteo Forecast (keyless, hourly)</div>
               </div>
-              <div class="val-metric-row">
-                <span class="v-label">Rel Humidity:</span>
-                <span id="forecastHumidityVal" class="v-val">-- %</span>
-              </div>
-              <div class="val-metric-row">
-                <span class="v-label">PBL Ventilation:</span>
-                <span id="forecastPblhVal" class="v-val">-- m</span>
-              </div>
-              <div class="val-metric-row">
-                <span class="v-label">Ventilation Coeff:</span>
-                <span id="forecastVcVal" class="v-val">-- m²/s</span>
-              </div>
-              <div class="val-metric-row">
-                <span class="v-label">Stagnation Risk:</span>
-                <span id="stagnationRisk" class="v-val text-accent">Calculating...</span>
+            </section>
+
+            <!-- METHOD Panel -->
+            <section class="panel">
+              <h3 style="color: #35d0c0; margin: 0 0 6px 0; font-size: 11px; text-transform: uppercase; letter-spacing: 0.8px;">METHOD</h3>
+              <div style="display: flex; flex-direction: column; gap: 4px; font-size: 11px; color: #8a99ad;">
+                <div><strong style="color: #cad3df;">Base field:</strong> Ordinary Kriging (0.25&deg; &rarr; 0.01&deg;)</div>
+                <div><strong style="color: #cad3df;">Residual:</strong> XGBoost sub-grid model</div>
+                <div><strong style="color: #cad3df;">Horizon:</strong> live met &times; emission/dispersion (Open-Meteo 72 h)</div>
               </div>
             </section>
           </aside>
 
           <main class="predict-main">
+            <!-- Predictive Map Toolbar -->
+            <div class="map-toolbar" style="border-bottom: 1px solid var(--border);">
+              <div class="pane-ctrl" style="flex: 1;">
+                <span class="pane-dot right"></span>
+                <span>AI Downscaled Output (0.01&deg; / 1km Hyper-Local) &middot; 72-Hour Forecast</span>
+              </div>
+              <div style="display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--dim);">
+                <span>horizon</span>
+                <span id="predictHorizonPill" style="background: rgba(53, 208, 192, 0.2); color: #35d0c0; border: 1px solid rgba(53, 208, 192, 0.4); padding: 1px 8px; border-radius: 12px; font-weight: 700; font-size: 10px;">Now</span>
+              </div>
+            </div>
+
             <div class="predict-map-wrapper">
               <div id="mapPredictive" class="map full-map"></div>
 
-              <!-- Floating Red Alert Widget -->
-              <div id="redAlertWidget" class="red-alert-widget normal">
-                <div class="alert-icon" id="alertIcon"></div>
-                <div class="alert-content">
-                  <div id="alertTitle" class="alert-title">Normal Air Quality Dispersion</div>
-                  <div id="alertText" class="alert-text">Adequate boundary layer ventilation. NO₂ below stagnation threshold.</div>
+              <!-- Top Left Map Cells Tag -->
+              <div id="mapResolutionTag" class="map-overlay-tag" style="position: absolute; top: 12px; left: 12px; z-index: 999; background: rgba(14, 18, 24, 0.88); border: 1px solid rgba(255,255,255,0.15); border-radius: 4px; padding: 4px 8px; font-size: 10.5px; color: #cad3df; pointer-events: none; font-family: Consolas, monospace;">
+                Downscaled 0.01&deg; &middot; 50&times;50 cells &middot; live met
+              </div>
+
+              <!-- Floating Alert Banner (Clean, no emoji) -->
+              <div id="redAlertWidget" class="floating-alert-banner normal" style="position: absolute; top: 12px; right: 12px; z-index: 1000; border-radius: 6px; padding: 8px 14px; max-width: 480px; transition: all 0.3s ease;">
+                <div style="display: flex; align-items: center; gap: 8px;">
+                  <span id="alertIconSymbol" class="alert-status-symbol" style="font-weight: 900; font-size: 14px;">[NORMAL]</span>
+                  <div>
+                    <div id="alertTitle" style="font-weight: 700; font-size: 11.5px;">Air quality within expected limits &middot; dispersion favourable</div>
+                    <div id="alertText" style="font-size: 10.5px; opacity: 0.85; margin-top: 1px;">Adequate boundary layer ventilation. NO₂ below stagnation threshold.</div>
+                  </div>
                 </div>
               </div>
             </div>
 
-            <!-- 72-Hour Timeline Slider -->
+            <!-- 72-Hour Timeline Bar -->
             <div class="predict-timeline-bar">
-              <div class="predict-timeline-header">
-                <div class="timeline-status">
-                  <span class="timeline-title">Forecast Step:</span>
-                  <strong id="timelineStepLabel" class="timeline-curr">[Now] (0 Hours)</strong>
-                </div>
-                <div class="legend">
-                  <canvas id="legendCanvasPredict" width="160" height="12"></canvas>
-                  <span id="legendLabelsPredict"></span>
-                </div>
-              </div>
               <div class="slider-wrapper">
-                <input type="range" id="timelineSliderPredict" min="0" max="4" step="1" value="0" />
+                <input type="range" id="timelineSliderPredict" min="0" max="72" step="1" value="0" />
                 <div class="timeline-labels">
                   <span class="t-step active" data-step="0">[Now]</span>
-                  <span class="t-step" data-step="1">[+12 Hrs]</span>
-                  <span class="t-step" data-step="2">[+24 Hrs]</span>
-                  <span class="t-step" data-step="3">[+48 Hrs]</span>
-                  <span class="t-step" data-step="4">[+72 Hrs]</span>
+                  <span class="t-step" data-step="12">[+12 Hrs]</span>
+                  <span class="t-step" data-step="24">[+24 Hrs]</span>
+                  <span class="t-step" data-step="48">[+48 Hrs]</span>
+                  <span class="t-step" data-step="72">[+72 Hrs]</span>
+                </div>
+              </div>
+              <div class="predict-timeline-footer" style="display: flex; justify-content: space-between; align-items: center; margin-top: 4px;">
+                <div id="forecastTimeFormatted" style="font-size: 12px; color: #cad3df; font-family: Consolas, monospace; font-weight: 600;">
+                  2026-09-28 00:00 Kolkata (T+0h)
+                </div>
+                <div class="legend" style="display: flex; align-items: center; gap: 8px;">
+                  <canvas id="legendCanvasPredict" width="160" height="12"></canvas>
+                  <span id="legendLabelsPredict" style="font-size: 10px; font-family: Consolas, monospace; color: var(--dim);">1,355.7 &mu;g/m&sup3;</span>
                 </div>
               </div>
             </div>

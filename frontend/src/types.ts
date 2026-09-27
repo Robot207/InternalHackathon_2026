@@ -214,12 +214,19 @@ export interface ForecastStep {
   step_hours: number
   label: string
   time: string
+  time_formatted?: string
   no2: number
   pblh: number
   wind_speed: number
+  wind_speed_ms?: number
+  wind_direction?: number
+  wind_str?: string
   humidity: number
   temperature: number
+  precipitation?: number
+  cloud_cover?: number
   ventilation_coeff: number
+  stagnation_index?: number
   level: 'normal' | 'moderate' | 'critical'
   alert: boolean
   badge: string

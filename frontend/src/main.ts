@@ -35,7 +35,6 @@ let activeCityId = 'mumbai'
 let predictStep = 0
 let trafficReductionActive = false
 let currentForecast: import('./types').ForecastResponse | null = null
-const PREDICT_LABELS = ['[Now] (0 Hours)', '[+12 Hrs]', '[+24 Hrs]', '[+48 Hrs]', '[+72 Hrs]']
 
 const layerCache = new Map<string, Layers>()
 const forecastCache = new Map<string, import('./types').ForecastResponse>()
@@ -488,15 +487,22 @@ function drawGridlines(): void {
       }
       return L.layerGroup(lines)
     }
-    if ($<HTMLInputElement>('gridCoarse').checked) {
+    if (i === 0 && $<HTMLInputElement>('gridCoarse').checked) {
       const cs = Number(summary.coarse_step) || 0.25
-      store.coarse = mk(makeEdges(latMin, latMax, cs), makeEdges(lonMin, lonMax, cs), '#ffb454', 1.6, 0.9)
+      store.coarse = mk(makeEdges(latMin, latMax, cs), makeEdges(lonMin, lonMax, cs), '#ffb454', 1.8, 0.9)
       store.coarse.addTo(pane.map)
     }
-    if (i === 1 && $<HTMLInputElement>('gridFine').checked) {
-      const fs = Number(summary.fine_step) || 0.05
-      store.fine = mk(makeEdges(latMin, latMax, fs), makeEdges(lonMin, lonMax, fs), '#ffffff', 0.6, 0.35)
-      store.fine.addTo(pane.map)
+    if (i === 1) {
+      if ($<HTMLInputElement>('gridCoarse').checked) {
+        const cs = Number(summary.coarse_step) || 0.25
+        store.coarse = mk(makeEdges(latMin, latMax, cs), makeEdges(lonMin, lonMax, cs), '#ffb454', 1.8, 0.75)
+        store.coarse.addTo(pane.map)
+      }
+      if ($<HTMLInputElement>('gridFine').checked) {
+        const fs = Number(summary.fine_step) || 0.01
+        store.fine = mk(makeEdges(latMin, latMax, fs), makeEdges(lonMin, lonMax, fs), '#35d0c0', 0.55, 0.4)
+        store.fine.addTo(pane.map)
+      }
     }
   })
 }
@@ -658,9 +664,6 @@ function renderProbeData(): void {
   $('probeMean').textContent = `${p.mean} µg/m³`
   $('probeRange').textContent = `min: ${p.min} · max: ${p.max} µg/m³`
 
-  $('probeVcd').textContent = `${p.inversion.vcd_umol_m2} µmol/m²`
-  $('probePblh').textContent = `PBLH: ${p.inversion.assumed_pblh_m}m · γ_thermo: ${p.inversion.thermo_factor}`
-
   if (p.nearest_station) {
     $('probeStation').textContent = p.nearest_station.name
     $('probeStationDist').textContent = `${p.nearest_station.dist_km} km away (${p.nearest_station.network} station)`
@@ -801,98 +804,126 @@ function renderProbeChart(p: ProbeResponse): void {
 function updateForecastUI(): void {
   if (!currentForecast || !currentForecast.steps || currentForecast.steps.length === 0) return
 
-  const cityDisp = $('predictCityDisplay')
-  if (cityDisp) cityDisp.textContent = currentForecast.city.name
-  const coordEl = $('predictCityCoord')
-  if (coordEl) coordEl.textContent = `${currentForecast.city.coords_formatted} · ${currentForecast.city.state}`
-
+  const cityName = currentForecast.city.name
   const stepData = currentForecast.steps[predictStep] || currentForecast.steps[0]
   if (!stepData) return
 
-  const no2El = $('forecastNo2Val')
-  const windEl = $('forecastWindVal')
-  const rhEl = $('forecastHumidityVal')
-  const pblhEl = $('forecastPblhVal')
-  const vcEl = $('forecastVcVal')
-  const stag = $('stagnationRisk')
+  const h = stepData.step_hours !== undefined ? stepData.step_hours : predictStep
+  const horizonText = h === 0 ? 'Now' : `+${h} Hrs`
 
-  const effectiveNo2 = trafficReductionActive ? stepData.no2 * 0.6 : stepData.no2
-  if (no2El) {
-    no2El.textContent = `${effectiveNo2.toFixed(1)} µg/m³${trafficReductionActive ? ' (-40%)' : ''}`
-    no2El.style.color = effectiveNo2 >= 35.0 ? '#ef4444' : effectiveNo2 >= 25.0 ? '#f59e0b' : '#10b981'
+  const pill = $('predictHorizonPill')
+  if (pill) pill.textContent = horizonText
+
+  const dHoriz = $('driverHorizon')
+  if (dHoriz) dHoriz.textContent = horizonText
+
+  const rawNo2 = stepData.no2
+  const effectiveNo2 = trafficReductionActive ? rawNo2 * 0.6 : rawNo2
+  const deltaNo2 = (rawNo2 * 0.4).toFixed(1)
+
+  const simScen = $('trafficSimScenario')
+  if (simScen) {
+    if (trafficReductionActive) {
+      simScen.innerHTML = `scenario: 40% traffic drop &rarr; <strong style="color:#10b981;">${effectiveNo2.toFixed(1)}</strong> &mu;g/m&sup3; (-${deltaNo2} &mu;g/m&sup3;)`
+    } else {
+      simScen.innerHTML = `scenario: business as usual &rarr; <span>${effectiveNo2.toFixed(1)}</span> &mu;g/m&sup3;`
+    }
   }
-  if (windEl) windEl.textContent = `${stepData.wind_speed.toFixed(1)} km/h`
-  if (rhEl) rhEl.textContent = `${stepData.humidity ? stepData.humidity.toFixed(0) : '--'} %`
-  if (pblhEl) pblhEl.textContent = `${stepData.pblh.toFixed(0)} m`
-  const vc = stepData.ventilation_coeff || Math.round(stepData.pblh * (stepData.wind_speed / 3.6))
-  if (vcEl) vcEl.textContent = `${vc.toFixed(0)} m²/s`
+
+  const dWind = $('driverWind')
+  if (dWind) {
+    dWind.textContent = stepData.wind_str || `${stepData.wind_speed_ms || (stepData.wind_speed / 3.6).toFixed(1)} m/s`
+  }
+
+  const dHum = $('driverHumidity')
+  if (dHum) dHum.textContent = `${stepData.humidity ? stepData.humidity.toFixed(0) : '--'} %`
+
+  const dPblh = $('driverPblh')
+  if (dPblh) dPblh.textContent = `${stepData.pblh.toFixed(0)} m`
+
+  const dRain = $('driverRain')
+  if (dRain) {
+    const rainVal = stepData.precipitation !== undefined ? stepData.precipitation.toFixed(2) : '0.00'
+    const cloudVal = stepData.cloud_cover !== undefined ? stepData.cloud_cover.toFixed(0) : '--'
+    dRain.textContent = `${rainVal} mm/h · cloud ${cloudVal} %`
+  }
+
+  const dTemp = $('driverTemp')
+  if (dTemp) dTemp.textContent = `${stepData.temperature ? stepData.temperature.toFixed(1) : '--'} °C`
+
+  const dVent = $('driverVentilation')
+  if (dVent) {
+    dVent.textContent = stepData.level === 'critical' ? 'critical (stagnant)' : stepData.level === 'moderate' ? 'moderate' : 'good'
+    dVent.style.color = stepData.level === 'critical' ? '#ef4444' : stepData.level === 'moderate' ? '#f59e0b' : '#35d0c0'
+  }
+
+  const dStag = $('driverStagnation')
+  if (dStag) {
+    dStag.textContent = `${stepData.stagnation_index !== undefined ? stepData.stagnation_index.toFixed(2) : '--'}`
+  }
+
+  const dMean = $('driverMean')
+  if (dMean) {
+    dMean.textContent = `${effectiveNo2.toFixed(1)} µg/m³`
+    dMean.style.color = effectiveNo2 >= 35.0 ? '#ef4444' : effectiveNo2 >= 25.0 ? '#f59e0b' : '#10b981'
+  }
+
+  const dBase = $('driverBaseline')
+  if (dBase) {
+    const baselineVal = currentForecast.steps[0]?.no2?.toFixed(1) || effectiveNo2.toFixed(1)
+    dBase.textContent = `baseline ${baselineVal} µg/m³ · mean of the latest analysis frame (${cityName.toLowerCase()})`
+  }
+
+  const tagEl = $('mapResolutionTag')
+  if (tagEl && layers) {
+    const hCells = layers.lats.length
+    const wCells = layers.lons.length
+    tagEl.textContent = `Downscaled 0.01° · ${hCells}×${wCells} cells · live met`
+  }
 
   const widget = $('redAlertWidget')
-  const icon = $('alertIcon')
-  const title = $('alertTitle')
-  const text = $('alertText')
+  const symEl = $('alertIconSymbol')
+  const titleEl = $('alertTitle')
+  const textEl = $('alertText')
 
-  // Check if spatial downscaled map has red pixels (>= 35 µg/m³)
-  let mapHasRed = false
-  if (layers && layers.layers.prediction && layers.layers.prediction.length > 0) {
-    const fIdx = Math.min(predictStep * 3, layers.layers.prediction.length - 1)
-    const activeFrame = frameAt(layers.layers.prediction, fIdx)
-    if (activeFrame) {
-      for (const row of activeFrame) {
-        for (const v of row) {
-          if (v !== null && v >= 35.0) {
-            mapHasRed = true
-            break
-          }
-        }
-        if (mapHasRed) break
-      }
-    }
-  }
-
-  // Atmospheric factors stagnation detection:
-  // VC < 600 m2/s or PBLH < 250m with high humidity (> 70%) or near calm wind (< 6 km/h)
+  const vc = stepData.ventilation_coeff || Math.round(stepData.pblh * (stepData.wind_speed / 3.6))
   const isAtmosphericTrap = (vc < 600 || stepData.pblh < 250) && ((stepData.humidity || 0) > 70 || stepData.wind_speed < 6.0)
-  const isSevere = (!trafficReductionActive && mapHasRed) || stepData.alert || effectiveNo2 >= 35.0 || (effectiveNo2 >= 16.0 && isAtmosphericTrap)
-  const isModerate = effectiveNo2 >= 25.0 || (vc < 1800 && (stepData.humidity || 0) > 65.0)
+  const isSevere = (!trafficReductionActive && (stepData.level === 'critical' || effectiveNo2 >= 35.0 || (effectiveNo2 >= 16.0 && isAtmosphericTrap)))
+  const isModerate = !isSevere && (stepData.level === 'moderate' || effectiveNo2 >= 22.0 || (vc < 1800 && (stepData.humidity || 0) > 65.0))
 
   if (isSevere) {
-    widget.className = 'red-alert-widget danger'
-    icon.textContent = ''
-    title.textContent = 'RED ALERT: High NO2 Stagnation. Trigger GRAP Protocols'
-    text.textContent = `Severe atmospheric trapping: Wind: ${stepData.wind_speed.toFixed(1)} km/h, RH: ${stepData.humidity ? stepData.humidity.toFixed(0) : 85}%, PBLH: ${stepData.pblh.toFixed(0)}m (VC: ${vc.toFixed(0)} m²/s). Critical stagnation trapping NO₂ (${effectiveNo2.toFixed(1)} µg/m³) across urban corridors.`
-    if (stag) {
-      stag.textContent = 'CRITICAL (GRAP Stage IV)'
-      stag.style.color = '#ef4444'
-    }
-  } else if (trafficReductionActive && (stepData.alert || mapHasRed) && !isSevere) {
-    widget.className = 'red-alert-widget warning'
-    icon.textContent = ''
-    title.textContent = 'Policy Intervened: Stagnation Averted'
-    text.textContent = `40% Traffic Drop cut vehicular peak NO₂ by ${(stepData.no2 * 0.4).toFixed(1)} µg/m³ (from ${stepData.no2.toFixed(1)} to ${effectiveNo2.toFixed(1)} µg/m³), successfully averting emergency stagnation!`
-    if (stag) {
-      stag.textContent = 'MITIGATED (Policy Active)'
-      stag.style.color = '#10b981'
-    }
+    widget.className = 'floating-alert-banner danger'
+    if (symEl) symEl.textContent = '[ALERT]'
+    if (titleEl) titleEl.textContent = 'RED ALERT: High NO2 Stagnation · Trigger GRAP Protocols'
+    if (textEl) textEl.textContent = `Severe atmospheric trapping: Wind: ${(stepData.wind_speed / 3.6).toFixed(1)} m/s, RH: ${stepData.humidity ? stepData.humidity.toFixed(0) : 85}%, PBLH: ${stepData.pblh.toFixed(0)}m (VC: ${vc.toFixed(0)} m²/s). Trapping NO₂ (${effectiveNo2.toFixed(1)} µg/m³).`
+  } else if (trafficReductionActive && stepData.level === 'critical') {
+    widget.className = 'floating-alert-banner warning'
+    if (symEl) symEl.textContent = '[MITIGATED]'
+    if (titleEl) titleEl.textContent = 'Policy Intervened: Stagnation Averted'
+    if (textEl) textEl.textContent = `40% Traffic Drop cut peak NO₂ by ${deltaNo2} µg/m³ (down to ${effectiveNo2.toFixed(1)} µg/m³), averting severe stagnation.`
   } else if (isModerate) {
-    widget.className = 'red-alert-widget warning'
-    icon.textContent = ''
-    title.textContent = 'Moderate Stagnation Advisory'
-    text.textContent = `Sub-optimal ventilation: Wind: ${stepData.wind_speed.toFixed(1)} km/h, RH: ${stepData.humidity ? stepData.humidity.toFixed(0) : 65}%, PBLH: ${stepData.pblh.toFixed(0)}m (VC: ${vc.toFixed(0)} m²/s). NO₂ elevated at ${effectiveNo2.toFixed(1)} µg/m³.`
-    if (stag) {
-      stag.textContent = 'MODERATE (Advisory)'
-      stag.style.color = '#f59e0b'
-    }
+    widget.className = 'floating-alert-banner warning'
+    if (symEl) symEl.textContent = '[ADVISORY]'
+    if (titleEl) titleEl.textContent = 'Moderate Stagnation Advisory'
+    if (textEl) textEl.textContent = `Sub-optimal ventilation: Wind: ${(stepData.wind_speed / 3.6).toFixed(1)} m/s, RH: ${stepData.humidity ? stepData.humidity.toFixed(0) : 65}%, PBLH: ${stepData.pblh.toFixed(0)}m. NO₂ at ${effectiveNo2.toFixed(1)} µg/m³.`
   } else {
-    widget.className = 'red-alert-widget normal'
-    icon.textContent = ''
-    title.textContent = 'Normal Air Quality Dispersion'
-    text.textContent = `Adequate boundary layer ventilation: Wind: ${stepData.wind_speed.toFixed(1)} km/h, RH: ${stepData.humidity ? stepData.humidity.toFixed(0) : 55}%, PBLH: ${stepData.pblh.toFixed(0)}m (VC: ${vc.toFixed(0)} m²/s). NO₂ at safe level (${effectiveNo2.toFixed(1)} µg/m³).`
-    if (stag) {
-      stag.textContent = 'GOOD (Normal Dispersion)'
-      stag.style.color = '#35d0c0'
-    }
+    widget.className = 'floating-alert-banner normal'
+    if (symEl) symEl.textContent = '[NORMAL]'
+    if (titleEl) titleEl.textContent = `Air quality within expected limits · dispersion favourable (wind ${(stepData.wind_speed / 3.6).toFixed(1)} m/s)`
+    if (textEl) textEl.textContent = `Adequate boundary layer ventilation: PBLH ${stepData.pblh.toFixed(0)}m, VC ${vc.toFixed(0)} m²/s. NO₂ safe at ${effectiveNo2.toFixed(1)} µg/m³.`
   }
+
+  const timeFormattedEl = $('forecastTimeFormatted')
+  if (timeFormattedEl) {
+    const rawTime = stepData.time || ''
+    const cleanTime = rawTime.slice(0, 16).replace('T', ' ')
+    timeFormattedEl.textContent = `${cleanTime} ${cityName} (T+${h}h)`
+  }
+
+  document.querySelectorAll('.timeline-labels .t-step').forEach((el) => {
+    const s = Number(el.getAttribute('data-step'))
+    el.classList.toggle('active', s === h)
+  })
 }
 
 async function loadForecastForCity(cityId: string): Promise<void> {
@@ -917,7 +948,7 @@ function renderPredictiveOverlay(): void {
 
   let frame: (number | null)[][] | null = null
   if (layers && layers.layers.prediction && layers.layers.prediction.length > 0) {
-    const fIdx = Math.min(predictStep * 3, layers.layers.prediction.length - 1)
+    const fIdx = Math.min(predictStep, layers.layers.prediction.length - 1)
     frame = frameAt(layers.layers.prediction, fIdx)
   }
 
@@ -946,7 +977,10 @@ function renderPredictiveOverlay(): void {
   }
   const lbl = $('legendLabelsPredict')
   if (lbl) {
-    lbl.textContent = trafficReductionActive ? '6 – 27 µg/m³ (-40%)' : '10 – 45 µg/m³'
+    const stepData = currentForecast?.steps[predictStep]
+    const effectiveNo2 = stepData ? (trafficReductionActive ? stepData.no2 * 0.6 : stepData.no2) : 35.0
+    const dynamicMax = Math.max(45.0, Math.round(effectiveNo2 * 1.8 * 10) / 10)
+    lbl.textContent = `${dynamicMax.toFixed(1)} µg/m³`
   }
 }
 
@@ -1154,11 +1188,6 @@ async function init(): Promise<void> {
   const predSlider = $<HTMLInputElement>('timelineSliderPredict')
   predSlider.addEventListener('input', () => {
     predictStep = Number(predSlider.value)
-    $('timelineStepLabel').textContent = PREDICT_LABELS[predictStep] || `+${predictStep * 12}h`
-    document.querySelectorAll('.timeline-labels .t-step').forEach((el) => {
-      const s = Number(el.getAttribute('data-step'))
-      el.classList.toggle('active', s === predictStep)
-    })
     updateForecastUI()
     renderPredictiveOverlay()
   })
@@ -1167,29 +1196,21 @@ async function init(): Promise<void> {
     el.addEventListener('click', () => {
       const s = Number(el.getAttribute('data-step'))
       predSlider.value = String(s)
-      predSlider.dispatchEvent(new Event('input'))
+      predictStep = s
+      updateForecastUI()
+      renderPredictiveOverlay()
     })
   })
 
   // What-If Simulator: 40% Traffic Drop checkbox
   $<HTMLInputElement>('trafficDropCheck').addEventListener('change', (ev) => {
     trafficReductionActive = (ev.target as HTMLInputElement).checked
-    const delta = $('simDelta')
-    const red = $('simReduction')
     const stepData = currentForecast?.steps[predictStep]
     const baselineNo2 = stepData ? stepData.no2 : 35.0
     const cutAmount = (baselineNo2 * 0.40).toFixed(1)
     if (trafficReductionActive) {
-      delta.textContent = '-40.0% (Simulated)'
-      delta.className = 'sim-val active'
-      red.textContent = `-${cutAmount} µg/m³ peak cut`
-      red.className = 'sim-val active'
       status(`What-If Simulator: 40% traffic drop active (-${cutAmount} µg/m³)`)
     } else {
-      delta.textContent = '0.0% (Baseline)'
-      delta.className = 'sim-val neutral'
-      red.textContent = '0.0 µg/m³'
-      red.className = 'sim-val neutral'
       status('What-If Simulator: Baseline emissions restored')
     }
     updateForecastUI()
