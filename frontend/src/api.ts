@@ -1,4 +1,4 @@
-import type { ApiState, AppConfig, Job, Layers, Meta, StationResult, Summary } from './types'
+import type { ApiState, AppConfig, Job, Layers, Meta, ProbeResponse, StationResult, Summary } from './types'
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, init)
@@ -30,10 +30,13 @@ export const api = {
   state: () => request<ApiState>('/api/state'),
   meta: () => request<Meta>('/api/result/meta'),
   layers: () => request<Layers>('/api/result/layers'),
+  probe: (lat: number, lon: number) => request<ProbeResponse>(`/api/probe?lat=${lat}&lon=${lon}`),
   fetch: (body: object) => post<{ job_id: string }>('/api/fetch', body),
   train: (body: object) => post<{ job_id: string }>('/api/train', body),
   apply: (body: object) => post<{ job_id: string }>('/api/apply', body),
   job: (id: string) => request<Job>(`/api/jobs/${id}`),
+  cities: () => request<{ default: string; count: number; cities: import('./types').CityItem[] }>('/api/cities'),
+  validation: () => request<import('./types').ValidationPayload>('/api/validation'),
   validateStations: (file: File) => {
     const form = new FormData()
     form.append('file', file)

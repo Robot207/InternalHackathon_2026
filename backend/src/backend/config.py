@@ -23,7 +23,7 @@ OVERPASS_URLS = [
 USER_AGENT = "no2-downscale-hackathon/0.1 (research prototype)"
 CHUNK = 40
 COARSE_STEP = 0.25
-DEFAULT_FINE_STEP = 0.05
+DEFAULT_FINE_STEP = 0.01  # Strictly 0.01 deg (~1km hyper-local resolution)
 DEFAULT_CLOUD_THRESHOLD = 60.0
 MAX_DAYS = 30
 MAX_HISTORY_DAYS = 92
@@ -86,6 +86,14 @@ CITIES = {
 }
 
 PRESETS: dict[str, dict] = {
+    "nagpur": {
+        "label": "Nagpur, India (Default)",
+        "bbox": [78.98, 21.04, 79.20, 21.26],
+        "center": [21.1458, 79.0882],
+        "zoom": 11,
+        "fine_reference": False,
+        "notes": "Default Indian city: 0.01° (~1km) hyper-local downscaled grid",
+    },
     "london": {
         "label": "London, UK",
         "bbox": [-0.51, 51.28, 0.33, 51.76],
@@ -121,14 +129,16 @@ PRESETS: dict[str, dict] = {
 }
 
 MODELS = {
-    "random_forest": "Random Forest",
-    "extra_trees": "Extra Trees",
-    "hist_gradient_boosting": "HistGradientBoosting",
+    "lightgbm": "Spatial LightGBM (Gradient Boosting)",
     "xgboost": "XGBoost",
+    "hist_gradient_boosting": "HistGradientBoosting",
+    "extra_trees": "Extra Trees",
     "mlp": "MLP Neural Net",
+    "random_forest": "Random Forest (Deprecated)",
 }
 
 SPLITS = {
+    "sloso": "Spatial Leave-One-Station-Out (SLOSO)",
     "spatial": "Unseen spatial blocks",
     "temporal": "Unseen time window",
     "spatiotemporal": "Unseen blocks + time",

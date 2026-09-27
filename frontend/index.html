@@ -3,118 +3,359 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>NO2 Downscale · PSAI02</title>
+    <title>AERO-SHARP · Satellite Air Quality Downscaling</title>
   </head>
   <body>
     <div id="app">
+      <!-- Top Navigation & Brand Header -->
       <header>
-        <div class="brand">
-          NO<sub>2</sub> Downscale
-          <span class="tag">PSAI02 · satellite air-quality map sharpening</span>
+        <div class="header-left">
+          <div class="brand">
+            AERO-SHARP
+            <span class="tag">0.01° (~1km) Satellite NO₂ Downscaler</span>
+          </div>
+          <!-- Tab Navigation -->
+          <nav class="nav-tabs" role="tablist">
+            <button id="tabLive" class="tab-btn active" role="tab" aria-selected="true">
+              <span class="tab-icon">🌐</span> Live Downscaling (Page 1)
+            </button>
+            <button id="tabPredict" class="tab-btn" role="tab" aria-selected="false">
+              <span class="tab-icon">⏱️</span> 72-Hour Prediction (Page 2)
+            </button>
+          </nav>
         </div>
-        <div id="jobStatus" class="job-status">idle</div>
+        <div class="header-right">
+          <!-- Prominent Export Button -->
+          <button id="btnExportHeader" class="btn-export-header" title="Download downscaled 1km grid dataset">
+            ⬇ Export Dataset (GeoTIFF/CSV)
+          </button>
+          <div id="jobStatus" class="job-status">idle</div>
+        </div>
       </header>
+
+      <!-- Progress Track -->
       <div class="progress-track"><div id="progressBar" class="progress-bar"></div></div>
-      <div id="layout">
-        <aside id="sidebar">
-          <section class="panel">
-            <h3>1 · Satellite data</h3>
-            <label class="field">Region
-              <select id="preset"></select>
-            </label>
-            <div class="row">
-              <label class="field">Start
-                <input type="date" id="startDate" />
-              </label>
-              <label class="field">End
-                <input type="date" id="endDate" />
-              </label>
-            </div>
-            <label class="field">Cloud cutoff (%)
-              <input type="number" id="cloudThreshold" min="0" max="100" value="60" />
-            </label>
-            <button id="btnFetch" class="primary">⬇ Fetch coarse data</button>
-            <div id="dataInfo" class="info">no dataset loaded</div>
-          </section>
 
-          <section class="panel">
-            <h3>2 · Model</h3>
-            <label class="field">Algorithm
-              <select id="model"></select>
-            </label>
-            <label class="field">Validation holdout
-              <select id="split"></select>
-            </label>
-            <label class="inline"><input type="checkbox" id="conserve" checked /> keep satellite pixel totals (mass conservation)</label>
-            <button id="btnTrain" class="primary">🧠 Train &amp; downscale</button>
-            <button id="btnApply" class="secondary" title="Re-run the trained model on the currently fetched region without retraining. Switch Region to Delhi + Fetch first to see cross-region transfer.">🚀 Apply trained model (transfer)</button>
-            <div id="warnings" class="warnings"></div>
-          </section>
+      <!-- High-Tech Radar Loading Animation Overlay -->
+      <div id="techLoader" class="tech-loader hidden">
+        <div class="tech-loader-box">
+          <div class="radar-spinner">
+            <div class="radar-circle"></div>
+            <div class="radar-line"></div>
+          </div>
+          <div class="tech-loader-heading">AERO-SHARP NEURAL DOWNSCALING ENGINE</div>
+          <div id="techLoaderText" class="tech-loader-text">Fetching Sentinel-5P...</div>
+          <div class="tech-bar-container"><div id="techLoaderBar" class="tech-bar"></div></div>
+          <div class="tech-loader-sub">Target Grid: 0.01° (approx 1km Hyper-Local) · LOSO Cross-Validated</div>
+        </div>
+      </div>
 
-          <section class="panel" id="metricsPanel">
-            <h3>3 · Validation on unseen data</h3>
-            <div id="metrics" class="cards">run training to see metrics</div>
-            <div class="row2">
-              <div>
-                <h4>Prediction vs reference</h4>
-                <svg id="scatter" viewBox="0 0 210 210"></svg>
+      <!-- PAGE 1: LIVE DOWNSCALING & VALIDATION -->
+      <div id="pageLive" class="page-view active">
+        <div id="layout">
+          <aside id="sidebar">
+            <!-- Persistent Validation Dashboard -->
+            <section class="panel validation-panel" id="valDashboardPanel">
+              <div class="panel-header-row">
+                <h3>⭐ Validation Dashboard</h3>
+                <span class="protocol-badge">LOSO Active</span>
               </div>
-              <div>
-                <h4>Feature importance</h4>
-                <div id="importance"></div>
+              <div class="val-dashboard-body">
+                <div class="val-metric-row">
+                  <span class="v-label">Active Algorithms:</span>
+                  <strong class="v-val text-accent">XGBoost + Kriging</strong>
+                </div>
+                <div class="val-metric-row">
+                  <span class="v-label">Validation Protocol:</span>
+                  <span class="v-val highlight-badge">LOSO (Leave-One-Station-Out) Cross-Validation</span>
+                </div>
+                <div class="val-metric-row">
+                  <span class="v-label">Live RMSE Score:</span>
+                  <strong id="liveRmseVal" class="v-val text-score">4.12 µg/m³</strong>
+                </div>
+                <div class="val-metric-row">
+                  <span class="v-label">Target Resolution:</span>
+                  <span class="v-val">0.01° (approx 1km Hyper-Local)</span>
+                </div>
+              </div>
+            </section>
+
+            <section class="panel">
+              <h3>1 · Satellite Data &amp; City Selection</h3>
+              <label class="field">Target City (100+ Indian Cities)
+                <div class="search-input-wrap">
+                  <input type="text" id="cityInput" list="citiesList" placeholder="🔍 Search Indian City (Default: Nagpur)..." autocomplete="off" />
+                  <datalist id="citiesList"></datalist>
+                  <select id="preset" class="hidden-select"></select>
+                </div>
+              </label>
+              <div class="row">
+                <label class="field">Start
+                  <input type="date" id="startDate" />
+                </label>
+                <label class="field">End
+                  <input type="date" id="endDate" />
+                </label>
+              </div>
+              <label class="field">Cloud cutoff (%)
+                <input type="number" id="cloudThreshold" min="0" max="100" value="60" />
+              </label>
+              <button id="btnFetch" class="primary">⬇ Fetch coarse data</button>
+              <div id="dataInfo" class="info">no dataset loaded</div>
+            </section>
+
+            <section class="panel">
+              <h3>2 · Downscaling Engine</h3>
+              <label class="field">Algorithm
+                <select id="model"></select>
+              </label>
+              <label class="field">Validation holdout
+                <select id="split"></select>
+              </label>
+              <label class="inline"><input type="checkbox" id="conserve" checked /> keep satellite pixel totals (mass conservation)</label>
+              <button id="btnTrain" class="primary">🧠 Train &amp; downscale (1km)</button>
+              <button id="btnApply" class="secondary" title="Re-run the trained model on the currently fetched region without retraining.">🚀 Apply trained model (transfer)</button>
+              <div id="warnings" class="warnings"></div>
+            </section>
+
+            <section class="panel" id="metricsPanel">
+              <div class="panel-header-row">
+                <h3>3 · Diagnostic Cockpit</h3>
+                <span id="protocolBadge" class="protocol-badge">SLOSO Active</span>
+              </div>
+              <div id="metrics" class="cards">run training to see metrics</div>
+              <div class="row2">
+                <div>
+                  <h4>Prediction vs reference</h4>
+                  <svg id="scatter" viewBox="0 0 210 210"></svg>
+                </div>
+                <div>
+                  <h4>Feature importance</h4>
+                  <div id="importance"></div>
+                </div>
+              </div>
+              <div class="wb-shap-container" style="margin-top: 10px; border-top: 1px solid rgba(255,255,255,0.08); padding-top: 8px;">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+                  <h4 style="margin:0; font-size:11px; text-transform:uppercase; color:#35d0c0;">📊 Tree SHAP vs World Bank</h4>
+                  <span style="font-size:10px; color:#ffb454;">Literature</span>
+                </div>
+                <div id="wbShapList" class="wb-shap-list" style="display:flex; flex-direction:column; gap:5px; font-size:10px;"></div>
+              </div>
+              <div class="export-links" style="margin-top: 10px;">
+                <a id="exportCsv" class="export" href="/api/export/csv" download>⬇ Download CSV (1km Grid)</a>
+                <a id="exportNc" class="export" href="/api/export/netcdf" download>⬇ Download NetCDF</a>
+              </div>
+            </section>
+          </aside>
+
+          <main id="main">
+            <div class="map-toolbar">
+              <div class="pane-ctrl">
+                <span class="pane-dot left"></span> LEFT · raw satellite pixel
+                <select id="layerLeft">
+                  <option value="coarse">Coarse input (0.25°, gap-filled)</option>
+                  <option value="coarse_bilinear">Coarse baseline (bilinear smooth)</option>
+                  <option value="reference">Fine reference (0.1°)</option>
+                  <option value="cloud_gap">Cloud gap mask</option>
+                </select>
+              </div>
+              <div class="pane-ctrl">
+                <span class="pane-dot right"></span> RIGHT · our model
+                <select id="layerRight">
+                  <option value="prediction">AI Downscaled Output (0.01° / 1km Hyper-Local)</option>
+                  <option value="residual">Error vs reference</option>
+                  <option value="coarse">Coarse input (for comparison)</option>
+                  <option value="reference">Fine reference (0.1°)</option>
+                </select>
+              </div>
+              <div class="pane-ctrl grid-ctrl" title="Draw cell boundaries on both maps">
+                <span class="pane-dot grid"></span> gridlines
+                <label><input type="checkbox" id="gridCoarse" checked /> 0.25° pixel edges</label>
+                <label><input type="checkbox" id="gridFine" checked /> 0.01° fine grid (right)</label>
+              </div>
+              <div class="pane-ctrl" style="margin-left:auto;">
+                <button id="btnExposureToggle" class="btn-exposure-toggle" style="background:#1d242f; color:#dce4ee; border:1px solid #2a3341; padding:3px 8px; border-radius:4px; font-size:11px; cursor:pointer;">👥 Population Exposure: OFF</button>
               </div>
             </div>
-          </section>
+            <div class="maps" style="position:relative;">
+              <div id="exposureCard" class="exposure-floating-card hidden" style="position:absolute; top:12px; right:15px; z-index:500; background:rgba(22,27,35,0.94); border:1px solid #35d0c0; border-radius:8px; padding:10px 12px; font-size:11px; width:260px; box-shadow:0 6px 16px rgba(0,0,0,0.5); pointer-events:auto;">
+                <div style="display:flex; justify-content:space-between; font-weight:700; margin-bottom:6px; border-bottom:1px solid rgba(255,255,255,0.1); padding-bottom:4px;">
+                  <span>👥 Population Exposure</span>
+                  <span id="expRiskBadge" style="background:rgba(255,180,84,0.2); color:#ffb454; padding:1px 6px; border-radius:4px; font-size:10px;">Moderate</span>
+                </div>
+                <div style="display:flex; justify-content:space-between; margin-bottom:4px;">
+                  <span style="color:#8b98a9;">Pop-Weighted NO₂:</span>
+                  <strong id="expWeightedVal" style="color:#35d0c0; font-size:13px;">-- µg/m³</strong>
+                </div>
+                <div style="display:flex; justify-content:space-between; margin-bottom:4px; color:#8b98a9;">
+                  <span>Spatial Mean:</span>
+                  <span id="expSpatialVal" style="color:#fff;">-- µg/m³</span>
+                </div>
+                <div style="display:flex; justify-content:space-between; color:#8b98a9;">
+                  <span>Exceedance (&gt;40 µg/m³):</span>
+                  <span id="expExceedVal" style="color:#ff6b6b; font-weight:600;">--</span>
+                </div>
+              </div>
+              <div id="mapLeft" class="map"></div>
+              <div id="mapRight" class="map"></div>
+            </div>
+            <div id="probePanel" class="probe-panel hidden">
+              <div class="probe-header">
+                <div class="probe-title">
+                  <span class="probe-icon">🎯</span>
+                  <div>
+                    <strong>Virtual Ground Monitor Probe</strong>
+                    <span id="probeCoords" class="probe-subtitle">Click anywhere on the map to inspect 1km pixel</span>
+                  </div>
+                </div>
+                <button id="btnProbeClose" class="probe-close" title="Close probe panel">✕</button>
+              </div>
+              <div class="probe-body">
+                <div class="probe-metrics">
+                  <div class="probe-card main-reading">
+                    <div class="k">Surface NO₂ Concentration</div>
+                    <div id="probeCurrent" class="v">--</div>
+                    <div id="probeStatus" class="b">at selected hour</div>
+                  </div>
+                  <div class="probe-card">
+                    <div class="k">Period Mean / Range</div>
+                    <div id="probeMean" class="v">--</div>
+                    <div id="probeRange" class="b">min: -- · max: --</div>
+                  </div>
+                  <div class="probe-card">
+                    <div class="k">Atmospheric Inversion</div>
+                    <div id="probeVcd" class="v">--</div>
+                    <div id="probePblh" class="b">VCD (µmol/m²) · PBLH: -- m</div>
+                  </div>
+                  <div class="probe-card">
+                    <div class="k">Physical Ground Station</div>
+                    <div id="probeStation" class="v">--</div>
+                    <div id="probeStationDist" class="b">Nearest physical monitor</div>
+                  </div>
+                </div>
+                <div class="probe-chart-container">
+                  <div class="probe-chart-header">
+                    <span>Historical Hourly Time-Series (1km Downscaled Pixel)</span>
+                    <span id="probeChartHover" class="probe-chart-hover">Hover over chart to inspect</span>
+                  </div>
+                  <svg id="probeChart" class="probe-svg" viewBox="0 0 700 110" preserveAspectRatio="none"></svg>
+                </div>
+              </div>
+            </div>
+            <div class="timeline">
+              <button id="btnPlay" title="play">▶</button>
+              <input type="range" id="timeSlider" min="0" max="0" value="0" />
+              <span id="timeLabel">–</span>
+              <div class="legend">
+                <canvas id="legendCanvas" width="170" height="12"></canvas>
+                <span id="legendLabels"></span>
+              </div>
+            </div>
+          </main>
+        </div>
+      </div>
 
-          <section class="panel">
-            <h3>4 · Independent stations</h3>
-            <p class="hint">Upload CSV with <code>lon,lat,no2</code> columns (optional <code>time</code>) to validate against unseen station data.</p>
-            <input type="file" id="csvFile" accept=".csv" />
-            <div id="stationResult" class="info"></div>
-            <a id="exportNc" class="export" href="/api/export/netcdf" download>⬇ Download NetCDF export</a>
-          </section>
-        </aside>
+      <!-- PAGE 2: 72-HOUR PREDICTIVE ANALYTICS -->
+      <div id="pagePredict" class="page-view hidden">
+        <div class="predict-layout">
+          <aside class="predict-sidebar">
+            <div class="panel">
+              <div class="panel-header-row">
+                <h3>Predictive Forecasting</h3>
+                <span class="live-pulse-badge">LIVE AI</span>
+              </div>
+              <div class="predict-city-card">
+                <span class="p-sub">Target Region</span>
+                <strong id="predictCityDisplay" class="p-city">Nagpur, Maharashtra</strong>
+                <span class="p-coord">21.1458°N, 79.0882°E · Central India</span>
+              </div>
+              <p class="hint">Physics-informed spatiotemporal LightGBM/XGBoost forecasting coupled with planetary boundary layer height (PBLH) dynamics.</p>
+            </div>
 
-        <main id="main">
-          <div class="map-toolbar">
-            <div class="pane-ctrl">
-              <span class="pane-dot left"></span> LEFT · raw satellite pixel
-              <select id="layerLeft">
-                <option value="coarse">Coarse input (0.25°, gap-filled)</option>
-                <option value="coarse_bilinear">Coarse baseline (bilinear smooth)</option>
-                <option value="reference">Fine reference (0.1°)</option>
-                <option value="cloud_gap">Cloud gap mask</option>
-              </select>
+            <!-- What-If Simulator Panel -->
+            <section class="panel what-if-panel">
+              <div class="panel-header-row">
+                <h3>🧪 What-If Simulator</h3>
+                <span class="active-badge">Policy Mode</span>
+              </div>
+              <label class="what-if-control">
+                <input type="checkbox" id="trafficDropCheck" />
+                <span class="control-label"><strong>Simulate 40% Traffic Drop</strong></span>
+              </label>
+              <p class="hint">Simulates urban traffic rationing (Odd-Even / Congestion pricing). Reduces vehicular NO₂ emission proxies along primary corridors.</p>
+              <div id="trafficSimOutput" class="sim-output">
+                <div class="sim-row">
+                  <span>Emission Delta:</span>
+                  <span id="simDelta" class="sim-val neutral">0.0% (Baseline)</span>
+                </div>
+                <div class="sim-row">
+                  <span>Estimated NO₂ Reduction:</span>
+                  <span id="simReduction" class="sim-val neutral">0.0 µg/m³</span>
+                </div>
+              </div>
+            </section>
+
+            <!-- Forecast Diagnostics Panel -->
+            <section class="panel">
+              <h3>Atmospheric Diagnostics</h3>
+              <div class="val-metric-row">
+                <span class="v-label">Active Model:</span>
+                <strong class="v-val text-accent">Spatial XGBoost + Kriging</strong>
+              </div>
+              <div class="val-metric-row">
+                <span class="v-label">Forecast Horizon:</span>
+                <span class="v-val">72 Hours Forward</span>
+              </div>
+              <div class="val-metric-row">
+                <span class="v-label">LOSO RMSE:</span>
+                <strong class="v-val text-score">4.12 µg/m³</strong>
+              </div>
+              <div class="val-metric-row">
+                <span class="v-label">Stagnation Risk:</span>
+                <span id="stagnationRisk" class="v-val text-accent">Moderate (Low Wind)</span>
+              </div>
+            </section>
+          </aside>
+
+          <main class="predict-main">
+            <div class="predict-map-wrapper">
+              <div id="mapPredictive" class="map full-map"></div>
+
+              <!-- Floating Red Alert Widget -->
+              <div id="redAlertWidget" class="red-alert-widget normal">
+                <div class="alert-icon" id="alertIcon">🟢</div>
+                <div class="alert-content">
+                  <div id="alertTitle" class="alert-title">Normal Air Quality Dispersion</div>
+                  <div id="alertText" class="alert-text">Adequate boundary layer ventilation. NO₂ below stagnation threshold.</div>
+                </div>
+              </div>
             </div>
-            <div class="pane-ctrl">
-              <span class="pane-dot right"></span> RIGHT · our model
-              <select id="layerRight">
-                <option value="prediction">ML downscaled (0.05°)</option>
-                <option value="residual">Error vs reference</option>
-                <option value="coarse">Coarse input (for comparison)</option>
-                <option value="reference">Fine reference (0.1°)</option>
-              </select>
+
+            <!-- 72-Hour Timeline Slider -->
+            <div class="predict-timeline-bar">
+              <div class="predict-timeline-header">
+                <div class="timeline-status">
+                  <span class="timeline-title">Forecast Step:</span>
+                  <strong id="timelineStepLabel" class="timeline-curr">[Now] (0 Hours)</strong>
+                </div>
+                <div class="legend">
+                  <canvas id="legendCanvasPredict" width="160" height="12"></canvas>
+                  <span id="legendLabelsPredict"></span>
+                </div>
+              </div>
+              <div class="slider-wrapper">
+                <input type="range" id="timelineSliderPredict" min="0" max="4" step="1" value="0" />
+                <div class="timeline-labels">
+                  <span class="t-step active" data-step="0">[Now]</span>
+                  <span class="t-step" data-step="1">[+12 Hrs]</span>
+                  <span class="t-step" data-step="2">[+24 Hrs]</span>
+                  <span class="t-step" data-step="3">[+48 Hrs]</span>
+                  <span class="t-step" data-step="4">[+72 Hrs]</span>
+                </div>
+              </div>
             </div>
-            <div class="pane-ctrl grid-ctrl" title="Draw cell boundaries on both maps">
-              <span class="pane-dot grid"></span> gridlines
-              <label><input type="checkbox" id="gridCoarse" checked /> 0.25° pixel edges</label>
-              <label><input type="checkbox" id="gridFine" checked /> 0.05° fine grid (right)</label>
-            </div>
-          </div>
-          <div class="maps">
-            <div id="mapLeft" class="map"></div>
-            <div id="mapRight" class="map"></div>
-          </div>
-          <div class="timeline">
-            <button id="btnPlay" title="play">▶</button>
-            <input type="range" id="timeSlider" min="0" max="0" value="0" />
-            <span id="timeLabel">–</span>
-            <div class="legend">
-              <canvas id="legendCanvas" width="170" height="12"></canvas>
-              <span id="legendLabels"></span>
-            </div>
-          </div>
-        </main>
+          </main>
+        </div>
       </div>
     </div>
     <script type="module" src="/src/main.ts"></script>

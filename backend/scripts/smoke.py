@@ -13,7 +13,8 @@ from backend.training import run_training
 def main() -> None:
     preset = sys.argv[1] if len(sys.argv) > 1 else "london"
     days = int(sys.argv[2]) if len(sys.argv) > 2 else 7
-    model = sys.argv[3] if len(sys.argv) > 3 else "random_forest"
+    model = sys.argv[3] if len(sys.argv) > 3 else "lightgbm"
+    split = sys.argv[4] if len(sys.argv) > 4 else "sloso"
     end = (dt.datetime.now(dt.timezone.utc).date() - dt.timedelta(days=1)).isoformat()
     start = (dt.date.fromisoformat(end) - dt.timedelta(days=days - 1)).isoformat()
 
@@ -33,7 +34,7 @@ def main() -> None:
         f"warnings={summary['warnings']}"
     )
     data = load_dataset(summary["key"])
-    meta = run_training(data, model, "spatiotemporal", True, summary, progress)
+    meta = run_training(data, model, split, True, summary, progress)
     artifacts.write_meta(meta)
     artifacts.write_layers(summary)
     print(json.dumps(meta["metrics"], indent=2))

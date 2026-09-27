@@ -7,6 +7,7 @@ import numpy as np
 from .config import CITIES
 from .fetch import nearest_city_distance
 from .grids import neighbor_stats, upsample
+from .inversion import vcd_to_surface_concentration
 
 STATIC_FEATURES = ["elevation", "road_density", "lon_norm", "lat_norm", "dist_city_km"]
 TIME_FEATURES = ["hour_sin", "hour_cos", "dow_sin", "dow_cos"]
@@ -19,7 +20,8 @@ COARSE_FEATURES = [
     "coarse_nb_max",
     "cloud_gap_frac",
 ]
-FEATURE_NAMES = COARSE_FEATURES + MET_FEATURES + STATIC_FEATURES + TIME_FEATURES
+PHYSICS_FEATURES = ["vcd_surface_inv", "ventilation_coeff"]
+FEATURE_NAMES = COARSE_FEATURES + MET_FEATURES + STATIC_FEATURES + TIME_FEATURES + PHYSICS_FEATURES
 
 
 def build_features(data: dict) -> dict:
@@ -57,6 +59,11 @@ def build_features(data: dict) -> dict:
     dow_sin = np.broadcast_to(np.sin(2 * np.pi * dows / 7.0).reshape(t_len, 1, 1), (t_len, h, w))
     dow_cos = np.broadcast_to(np.cos(2 * np.pi * dows / 7.0).reshape(t_len, 1, 1), (t_len, h, w))
 
+    # Atmospheric physics features
+    vcd_proxy = (c_up / 46.0055) * (np.maximum(wx["blh"], 80.0) / 1000.0)
+    vcd_surface = vcd_to_surface_concentration(vcd_proxy, wx["blh"], wx["temp"], elev_b)
+    ventilation = (wx["spd"] * np.maximum(wx["blh"], 80.0)) / 1000.0
+
     stack = [
         c_up,
         nb_up["mean"],
@@ -81,6 +88,8 @@ def build_features(data: dict) -> dict:
         hour_cos,
         dow_sin,
         dow_cos,
+        vcd_surface,
+        ventilation,
     ]
     X = np.stack(stack, axis=-1).astype(np.float32)
     bad = ~np.isfinite(X)

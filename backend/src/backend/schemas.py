@@ -8,10 +8,11 @@ from .config import DEFAULT_CLOUD_THRESHOLD, DEFAULT_FINE_STEP
 
 
 class FetchRequest(BaseModel):
-    preset: str = "london"
+    preset: str = "nagpur"
+    city: str | None = None
     start_date: str | None = None
     end_date: str | None = None
-    fine_step: float = Field(default=DEFAULT_FINE_STEP, gt=0.01, le=0.2)
+    fine_step: float = Field(default=DEFAULT_FINE_STEP, ge=0.005, le=0.2)
     cloud_threshold: float = Field(default=DEFAULT_CLOUD_THRESHOLD, ge=0, le=100)
     force: bool = False
 

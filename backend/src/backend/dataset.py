@@ -7,7 +7,7 @@ import numpy as np
 
 from . import fetch as fch
 from .config import CITIES, DATASET_DIR, DEFAULT_CLOUD_THRESHOLD, MAX_DAYS, PRESETS
-from .grids import block_mean, make_grid
+from .grids import block_mean, make_grid, upsample
 
 
 def dataset_key(preset: str, start: str, end: str, step: float, cloud_threshold: float) -> str:
@@ -38,9 +38,25 @@ def build_dataset(
     cloud_threshold: float = DEFAULT_CLOUD_THRESHOLD,
     force: bool = False,
     progress=None,
+    city: str | None = None,
 ) -> dict:
-    if preset not in PRESETS:
-        raise ValueError(f"unknown preset: {preset}")
+    from .indian_cities import INDIAN_CITIES, get_city_bbox
+
+    city_target = city or preset
+    if city is not None or preset not in PRESETS:
+        city_info = get_city_bbox(city_target)
+        preset = city_info["id"]
+        cfg = {
+            "label": city_info["name"],
+            "bbox": city_info["bbox"],
+            "center": city_info["center"],
+            "zoom": city_info["zoom"],
+            "fine_reference": False,
+            "notes": f"Indian City domain ({city_info['name']}): 0.01° (~1km) hyper-local inference",
+        }
+    else:
+        cfg = PRESETS[preset]
+
     validate_dates(start_date, end_date)
     key = dataset_key(preset, start_date, end_date, fine_step, cloud_threshold)
     npz_path, sum_path = dataset_paths(key)
@@ -53,34 +69,28 @@ def build_dataset(
         if progress:
             progress(p, stage)
 
-    cfg = PRESETS[preset]
     grid = make_grid(cfg["bbox"], fine_step)
-    lats = np.repeat(grid["lats"], grid["W"])
-    lons = np.tile(grid["lons"], grid["H"])
     h, w = grid["H"], grid["W"]
+    clats = grid["clats"]
+    clons = grid["clons"]
+    Hc, Wc = len(clats), len(clons)
+    clat_mesh, clon_mesh = np.meshgrid(clats, clons, indexing="ij")
+    clats_flat = clat_mesh.ravel()
+    clons_flat = clon_mesh.ravel()
     warnings: list[str] = []
 
-    report(0.02, "starting fetch")
-    ref = np.full((0, h, w), np.nan)
-    if cfg["fine_reference"]:
-        try:
-            ref_flat, times = fch.fetch_air_quality(
-                lats, lons, start_date, end_date, "cams_europe", ["nitrogen_dioxide"], report
-            )
-            ref = ref_flat[:, :, 0].reshape(-1, h, w)
-        except Exception as exc:  # noqa: BLE001
-            warnings.append(f"fine reference fetch failed: {exc}")
-    if ref.shape[0] == 0:
-        ref = None
-        if cfg["fine_reference"]:
-            warnings.append("fine reference unavailable, running in coarse-only mode")
-
+    report(0.08, "fetching coarse satellite NO2 (0.25 deg CAMS)")
     coarse_flat, times = fch.fetch_air_quality(
-        lats, lons, start_date, end_date, "cams_global", ["nitrogen_dioxide"], report
+        clats_flat, clons_flat, start_date, end_date, "cams_global", ["nitrogen_dioxide"], report
     )
-    coarse_fine = coarse_flat[:, :, 0].reshape(-1, h, w)
+    n_t = coarse_flat.shape[1]
+    coarse_blocks = coarse_flat[:, :, 0].T.reshape(n_t, Hc, Wc)
+    coarse_fine = upsample(coarse_blocks, grid)
 
-    wx_flat, wx_times = fch.fetch_weather(lats, lons, start_date, end_date, report)
+    ref = None
+
+    report(0.28, "fetching meteorology (ECMWF blend)")
+    wx_flat, wx_times = fch.fetch_weather(clats_flat, clons_flat, start_date, end_date, report)
     if wx_times != times:
         if not wx_times:
             raise RuntimeError("meteorology returned no data")
@@ -92,15 +102,18 @@ def build_dataset(
         keep = [pos[t] for t in common]
         times = common
         coarse_fine = coarse_fine[keep]
-        if ref is not None:
-            ref = ref[keep]
+        coarse_blocks = coarse_blocks[keep]
         wx_keep = [wx_times.index(t) for t in common]
         wx_flat = wx_flat[wx_keep]
-    n_t = len(times)
-    wx = wx_flat.reshape(n_t, h, w, -1)
 
-    elev = fch.fetch_elevation(lats, lons, report)
-    elev = elev.reshape(h, w)
+    n_t = len(times)
+    wx_coarse = wx_flat.transpose(1, 0, 2).reshape(n_t, Hc, Wc, -1)
+    wx = np.stack([upsample(wx_coarse[..., vi], grid) for vi in range(wx_coarse.shape[-1])], axis=-1)
+
+    elev_raw = fch.fetch_elevation(clats_flat, clons_flat, report)
+    elev_coarse = elev_raw.reshape(1, Hc, Wc)
+    elev = upsample(elev_coarse, grid)[0]
+
     roads, roads_ok = fch.fetch_road_density(
         cfg["bbox"], grid["lats"], grid["lons"], fine_step, preset, report
     )
@@ -117,13 +130,12 @@ def build_dataset(
     blh = wx[..., 6]
 
     report(0.8, "building coarse grid")
-    coarse_blocks = block_mean(coarse_fine, grid)
-    cloud_blocks = block_mean(cloud, grid)
+    cloud_blocks = wx_coarse[..., 4]
     gap = np.where(
         np.isfinite(cloud_blocks), cloud_blocks > cloud_threshold, False
     ).astype(bool)
     observed = np.where(gap, np.nan, coarse_blocks)
-    filled = gapfill(observed)
+    filled = gapfill(observed, coarse_blocks)
 
     if ref is not None:
         bad = int(np.sum(~np.isfinite(ref)))
@@ -208,7 +220,7 @@ def load_dataset(key: str) -> dict:
     return out
 
 
-def gapfill(observed: np.ndarray) -> np.ndarray:
+def gapfill(observed: np.ndarray, coarse_raw: np.ndarray | None = None) -> np.ndarray:
     t_len, hc, wc = observed.shape
     arr = observed.astype(np.float64).copy()
     for i in range(hc):
@@ -239,9 +251,17 @@ def gapfill(observed: np.ndarray) -> np.ndarray:
             new_vals = np.where(still & np.isfinite(mean), mean, np.nan)
             filled = np.where(np.isfinite(new_vals), new_vals, filled)
             still = ~np.isfinite(filled)
-        global_mean = np.nanmean(arr) if np.isfinite(arr).any() else 0.0
-        filled = np.where(np.isfinite(filled), filled, global_mean if np.isfinite(global_mean) else 0.0)
+        
+        fallback_val = 22.0
+        if coarse_raw is not None and np.isfinite(coarse_raw).any():
+            fallback_val = float(np.nanmean(coarse_raw))
+        elif np.isfinite(arr).any():
+            fallback_val = float(np.nanmean(arr))
+        if not np.isfinite(fallback_val) or fallback_val <= 1.0:
+            fallback_val = 22.0
+        filled = np.where(np.isfinite(filled), filled, fallback_val)
         arr = filled
+    arr = np.where(np.isfinite(arr) & (arr > 0.5), arr, 20.0)
     return arr
 
 

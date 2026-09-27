@@ -1,16 +1,14 @@
 type RGB = [number, number, number]
 
-const VIRIDIS: RGB[] = [
-  [68, 1, 84],
-  [72, 40, 120],
-  [62, 74, 137],
-  [49, 104, 142],
-  [38, 130, 142],
-  [31, 158, 137],
-  [53, 183, 121],
-  [109, 205, 89],
-  [180, 222, 44],
-  [253, 231, 37],
+const NO2_PALETTE: RGB[] = [
+  [22, 48, 130],   // 0.00: Deep Blue (Clean background)
+  [25, 135, 185],  // 0.15: Cyan / Sky Blue
+  [40, 185, 115],  // 0.30: Emerald Green (Good)
+  [160, 215, 45],  // 0.45: Lime Green
+  [248, 212, 32],  // 0.60: Bright Yellow (Moderate)
+  [255, 125, 15],  // 0.75: Vivid Orange (Poor / Stagnant)
+  [225, 30, 40],   // 0.90: Crimson Red (Severe)
+  [140, 10, 80],   // 1.00: Deep Purple (Critical)
 ]
 
 const COOLWARM: RGB[] = [
@@ -37,7 +35,7 @@ function interpolate(anchors: RGB[], t: number): RGB {
 }
 
 export function sequential(t: number): RGB {
-  return interpolate(VIRIDIS, t)
+  return interpolate(NO2_PALETTE, t)
 }
 
 export function diverging(t: number): RGB {

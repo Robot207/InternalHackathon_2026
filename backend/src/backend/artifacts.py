@@ -61,11 +61,21 @@ def build_layers(summary: dict) -> dict:
     for name, arr in raw.items():
         finite = arr[np.isfinite(arr)]
         if len(finite) == 0:
-            ranges[name] = None
+            if name == "residual":
+                ranges[name] = [-5.0, 5.0]
+            elif name == "cloud_gap":
+                ranges[name] = [0.0, 1.0]
+            else:
+                ranges[name] = [8.0, 42.0]
             continue
+        p2 = float(np.percentile(finite, 2))
+        p98 = float(np.percentile(finite, 98))
+        if p98 - p2 < 1.0:
+            p2 = max(0.0, p2 - 4.0)
+            p98 = p98 + 8.0
         ranges[name] = [
-            round(float(np.percentile(finite, 2)), 3),
-            round(float(np.percentile(finite, 98)), 3),
+            round(p2, 3),
+            round(p98, 3),
         ]
     layers = {name: _round(arr) for name, arr in raw.items()}
     lats = np.asarray(summary["lats"], dtype=float)

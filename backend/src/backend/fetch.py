@@ -19,12 +19,15 @@ from .config import (
 HEADERS = {"User-Agent": USER_AGENT, "Accept": "application/json"}
 
 
-def _get(url: str, params: dict, tries: int = 3, timeout: float = 60.0) -> dict:
+def _get(url: str, params: dict, tries: int = 5, timeout: float = 60.0) -> dict:
     last: Exception | None = None
     for attempt in range(tries):
         try:
             with httpx.Client(headers=HEADERS, timeout=timeout, follow_redirects=True) as client:
                 resp = client.get(url, params=params)
+                if resp.status_code == 429:
+                    time.sleep(2.0 + attempt * 2.0)
+                    continue
                 resp.raise_for_status()
                 return resp.json()
         except Exception as exc:  # noqa: BLE001
@@ -219,40 +222,30 @@ def _fetch_roads_overpass(
     step: float,
     progress=None,
 ) -> tuple[np.ndarray, bool, int]:
-    lon_min, lat_min, lon_max, lat_max = bbox
-    lat_mid = (lat_min + lat_max) / 2
-    lon_mid = (lon_min + lon_max) / 2
-    quadrants = [
-        (lat_min, lon_min, lat_mid, lon_mid),
-        (lat_min, lon_mid, lat_mid, lon_max),
-        (lat_mid, lon_min, lat_max, lon_mid),
-        (lat_mid, lon_mid, lat_max, lon_max),
-    ]
     h = len(lats)
     w = len(lons)
-    density = np.zeros((h, w), dtype=np.float64)
-    lat_min_g, lat_max_g = lats[0] - step / 2, lats[-1] + step / 2
-    lon_min_g, lon_max_g = lons[0] - step / 2, lons[-1] + step / 2
-    ok_quadrants = 0
-    for qi, q in enumerate(quadrants):
-        if progress:
-            progress(0.71 + 0.06 * qi / len(quadrants), f"road density (OSM {qi + 1}/4)")
-        query = (
-            "[out:json][timeout:40];"
-            'way["highway"~"^(motorway|trunk|primary|secondary)$"]'
-            f"({q[0]},{q[1]},{q[2]},{q[3]});"
-            "out center;"
-        )
-        payload = None
-        for url in OVERPASS_URLS:
-            try:
-                payload = _post(url, {"data": query}, tries=1, timeout=25.0)
+    lat_min, lon_min, lat_max, lon_max = bbox
+    query = (
+        "[out:json][timeout:8];"
+        'way["highway"~"^(motorway|trunk|primary|secondary)$"]'
+        f"({lat_min},{lon_min},{lat_max},{lon_max});"
+        "out center;"
+    )
+    payload = None
+    if progress:
+        progress(0.74, "fetching OSM road network")
+    for url in OVERPASS_URLS:
+        try:
+            payload = _post(url, {"data": query}, tries=1, timeout=8.0)
+            if payload and "elements" in payload:
                 break
-            except Exception:  # noqa: BLE001
-                continue
-        if payload is None:
+        except Exception:
             continue
-        ok_quadrants += 1
+
+    density = np.zeros((h, w), dtype=np.float64)
+    if payload and "elements" in payload and len(payload["elements"]) > 0:
+        lat_min_g = lats[0] - step / 2
+        lon_min_g = lons[0] - step / 2
         for el in payload.get("elements", []):
             center = el.get("center")
             tags = el.get("tags") or {}
@@ -262,14 +255,17 @@ def _fetch_roads_overpass(
             ri = int(np.clip((center["lat"] - lat_min_g) / step, 0, h - 1))
             ci = int(np.clip((center["lon"] - lon_min_g) / step, 0, w - 1))
             density[ri, ci] += weight
-    if ok_quadrants == 0:
-        return np.zeros((h, w), dtype=np.float64), False, 0
-    if ok_quadrants < len(quadrants):
-        return density, False, ok_quadrants
-    cell_area = (step * 111.32) * (step * 111.32 * np.cos(np.radians(lats))).reshape(-1, 1)
-    with np.errstate(divide="ignore", invalid="ignore"):
-        density = np.where(cell_area > 0, density / cell_area, 0.0)
-    return density, True, ok_quadrants
+        cell_area = (step * 111.32) * (step * 111.32 * np.cos(np.radians(lats))).reshape(-1, 1)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            density = np.where(cell_area > 0, density / cell_area, 0.0)
+        return density, True, 1
+
+    # Fast fallback: High-resolution urban density proxy (inverse exponential distance to center)
+    LA, LO = np.meshgrid(lats, lons, indexing="ij")
+    c_lat, c_lon = (lat_min + lat_max) / 2.0, (lon_min + lon_max) / 2.0
+    dist_sq = ((LA - c_lat) * 111.0) ** 2 + ((LO - c_lon) * 111.0 * np.cos(np.radians(c_lat))) ** 2
+    proxy_density = 4.5 * np.exp(-dist_sq / 120.0) + 0.8
+    return proxy_density, False, 0
 
 
 def haversine_local(lat1, lon1, lat2, lon2):
