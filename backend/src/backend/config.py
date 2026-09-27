@@ -23,7 +23,13 @@ OVERPASS_URLS = [
 USER_AGENT = "no2-downscale-hackathon/0.1 (research prototype)"
 CHUNK = 40
 COARSE_STEP = 0.25
-DEFAULT_FINE_STEP = 0.05
+# Target output resolution: 0.01 deg ≈ 1.1 km (hyper-local grid).
+DEFAULT_FINE_STEP = 0.01
+# Upstream sampling step. CAMS global is 0.25 deg, CAMS Europe 0.1 deg and the
+# model meteorology 0.1-0.25 deg native, so sampling them any finer than this
+# only multiplies HTTP requests (x25 at 0.01 deg) without adding information.
+# Samples are taken here and interpolated onto the 0.01 deg output grid.
+FETCH_STEP = 0.05
 DEFAULT_CLOUD_THRESHOLD = 60.0
 MAX_DAYS = 30
 MAX_HISTORY_DAYS = 92

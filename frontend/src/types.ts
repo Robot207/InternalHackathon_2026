@@ -15,7 +15,52 @@ export interface AppConfig {
   models: NamedOption[]
   splits: NamedOption[]
   presets: Preset[]
-  defaults: { model: string; split: string; preset: string }
+  defaults: { model: string; split: string; preset: string; city?: string }
+  target_resolution?: { fine_step: number; label: string; coarse_step: number }
+  algorithms?: string
+  n_cities?: number
+}
+
+export interface CityInfo {
+  id: string
+  label: string
+  center: number[]
+  zoom: number
+  min_lat: number
+  max_lat: number
+  min_lon: number
+  max_lon: number
+}
+
+export interface CityListResponse {
+  default: string
+  count: number
+  cities: CityInfo[]
+}
+
+export interface LosoFold {
+  held_out_station: string
+  observed: number
+  predicted: number
+  coarse_predicted: number
+  error: number
+}
+
+/** Validation envelope returned by /api/validation/loso, /api/state and /api/result/meta. */
+export interface Validation {
+  protocol: string
+  protocol_id: string
+  algorithms: string
+  rmse_score: number
+  rmse_unit: string
+  n_folds: number
+  estimated: boolean
+  available: boolean
+  reason: string
+  timestamp: string
+  folds?: LosoFold[]
+  metrics?: Metrics | null
+  baseline_rmse?: number | null
 }
 
 export interface Summary {
@@ -75,6 +120,7 @@ export interface Meta {
   start_date?: string
   end_date?: string
   summary_key: string
+  validation?: Validation
   benchmark?: {
     model_name: string
     split?: string
@@ -113,6 +159,7 @@ export interface ApiState {
   has_model: boolean
   has_predictions: boolean
   has_layers: boolean
+  validation?: Validation
 }
 
 export interface StationResult {

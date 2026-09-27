@@ -130,7 +130,9 @@ def export_netcdf(summary: dict) -> "object":
         ref = np.full_like(pred, np.nan)
     lats = np.asarray(summary["lats"], dtype=np.float64)
     lons = np.asarray(summary["lons"], dtype=np.float64)
-    times = [t.replace(":00Z", ":00:00") for t in summary["times"]]
+    # summary times look like "2026-09-25T00:00:00Z"; numpy/xarray want the bare
+    # ISO form. A naive ":00Z" -> ":00:00" swap produced "...T00:00:00:00".
+    times = [t.replace("Z", "") for t in summary["times"]]
     elev = _static_elevation(summary).astype(np.float32)
     roads = _static_roads(summary).astype(np.float32)
     meta = read_meta() or {}
@@ -192,8 +194,9 @@ def export_geojson(summary: dict, time_idx: int = -1) -> "object":
     t = (time_idx % pred.shape[0]) if pred.shape[0] > 0 else 0
     t_str = times[t] if t < len(times) else "latest"
 
-    dlat = (lats[1] - lats[0]) / 2.0 if len(lats) > 1 else 0.025
-    dlon = (lons[1] - lons[0]) / 2.0 if len(lons) > 1 else 0.025
+    fine_step = float(summary.get("fine_step") or 0.01)
+    dlat = (lats[1] - lats[0]) / 2.0 if len(lats) > 1 else fine_step / 2.0
+    dlon = (lons[1] - lons[0]) / 2.0 if len(lons) > 1 else fine_step / 2.0
 
     features = []
     for r, lat in enumerate(lats):
@@ -280,6 +283,62 @@ def export_csv(summary: dict) -> "object":
     df = pd.DataFrame(rows)
     path = latest_dir() / "export.csv"
     df.to_csv(path, index=False)
+    return path
+
+
+def export_geotiff(summary: dict, time_idx: int = -1) -> "object":
+    """Write the downscaled NO2 field as a single-band float32 GeoTIFF.
+
+    Needs ``rasterio``; raises ``ImportError`` when it is not installed so the
+    API layer can return a truthful 501 instead of a mislabelled file.
+    """
+    import rasterio  # noqa: PLC0415
+    from rasterio.transform import from_origin  # noqa: PLC0415
+
+    data = np.load(latest_dir() / "predictions.npz", allow_pickle=False)
+    pred = data["pred"].astype(np.float32)
+    lats = np.asarray(summary["lats"], dtype=np.float64)
+    lons = np.asarray(summary["lons"], dtype=np.float64)
+
+    t = (time_idx % pred.shape[0]) if pred.shape[0] > 0 else 0
+    band = pred[t]
+    if band.shape != (len(lats), len(lons)):
+        raise ValueError("prediction grid does not match summary lat/lon arrays")
+
+    x_res = float(lons[1] - lons[0]) if len(lons) > 1 else float(summary.get("fine_step", 0.01))
+    y_res = float(lats[1] - lats[0]) if len(lats) > 1 else float(summary.get("fine_step", 0.01))
+    transform = from_origin(
+        lons[0] - x_res / 2.0,
+        lats[0] + y_res / 2.0,
+        x_res,
+        y_res,
+    )
+
+    meta = read_meta() or {}
+    path = latest_dir() / "export.tif"
+    with rasterio.open(
+        path,
+        "w",
+        driver="GTiff",
+        height=band.shape[0],
+        width=band.shape[1],
+        count=1,
+        dtype="float32",
+        crs="EPSG:4326",
+        transform=transform,
+        nodata=float("nan"),
+        compress="deflate",
+        tiled=True,
+    ) as dst:
+        dst.write(band.astype(np.float32), 1)
+        dst.set_band_description(1, "downscaled_NO2_ugm3")
+        dst.update_tags(
+            title="NO2 satellite downscaling demonstration",
+            model=str(meta.get("model_name", "")),
+            protocol=str((meta.get("validation") or {}).get("protocol", "")),
+            units="ug m-3",
+            time=str((summary.get("times") or [""])[t]),
+        )
     return path
 
 

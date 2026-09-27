@@ -3,7 +3,7 @@
 **AI/ML downscaling of satellite-based NO₂ air-quality maps.**
 Satellites like Sentinel‑5P/TROPOMI measure nitrogen dioxide as *big* pixels
 (~0.25°, ~25 km) and clouds wipe out large parts of every overpass. This tool
-takes that coarse, patchy record and produces a finer (0.05°, ~5 km) hourly
+takes that coarse, patchy record and produces a finer (**0.01°, ~1 km**) hourly
 NO₂ field — repairing cloud gaps first, then sharpening the field with a
 learned ML model — shown side-by-side against the raw satellite pixel so the
 result is inspectable, not just plausible.
@@ -14,7 +14,7 @@ result is inspectable, not just plausible.
 
 | Left map — *raw satellite pixel* | Right map — *our model* |
 | --- | --- |
-| Coarse 0.25° pixels (crisp block view), cloud-gap mask, optional bilinear baseline, independent 0.1° reference | ML-downscaled 0.05° prediction, error vs reference, per-pixel comparison |
+| Coarse 0.25° pixels (crisp block view), cloud-gap mask, optional bilinear baseline, independent 0.1° reference | ML-downscaled **0.01° / ~1 km** prediction, error vs reference, per-pixel comparison |
 
 Both maps are **synced** (pan/zoom one, the other follows), carry pixel-edge
 gridlines, and share a time slider + play button over the fetched window.
@@ -28,13 +28,83 @@ The sidebar runs the whole workflow: fetch → train → validate → export.
    - Coarse NO₂: Open‑Meteo Air Quality (CAMS global, ~0.1° native) aggregated to 0.25° satellite-pixel blocks.
    - Fine reference (Europe only): CAMS European analysis at 0.1° — an *independent* product to validate against.
    - Meteorology: temperature, wind, humidity, cloud cover, precipitation, boundary-layer height (Open‑Meteo).
-   - Static: elevation (Open‑Meteo DEM), OSM road density (Overpass, optional), nearest-city distance.
+   - Static: elevation (Open‑Meteo DEM), OSM road density (local Geofabrik extract via DuckDB, Overpass as fallback), nearest-city distance.
 2. **Cloud-gap repair** — pixels whose cloud cover exceeds the cutoff (default 60%) are masked, then gap-filled by temporal interpolation within each block plus spatial neighbour blending. The mask itself is exposed in the UI as a layer (the UI reports the repaired fraction, e.g. 41% for London, 66% for monsoon Mumbai).
 3. **Feature engineering** — coarse NO₂ + neighbour statistics, gap fraction, met features, cyclic hour/weekday, elevation, road density, coordinates, city distance (~23 features).
 4. **Model** — scikit-learn/XGBoost regressors (`random_forest`, `extra_trees`, `hist_gradient_boosting`, `xgboost`, `mlp`) trained on the **log-ratio** between the fine truth and the bilinear coarse baseline, so the model learns sub-pixel *structure* rather than the smooth background.
 5. **Conservation** — predictions are re-pinned so every 0.25° block keeps its original satellite total; the model may only redistribute mass inside the pixel.
-6. **Validation** — held-out spatial blocks, a held-out time window, or both; scored against the bilinear baseline (RMSE/MAE/pattern r²/skill). Station CSV upload gives a fully independent check.
-7. **Serve** — FastAPI job API + Vite/Leaflet dual-map frontend; results exportable as NetCDF.
+6. **Validation** — held-out spatial blocks, a held-out time window, or both; scored against the bilinear baseline (RMSE/MAE/pattern r²/skill). Station CSV upload gives a fully independent check. On top of that, **Leave-One-Station-Out cross-validation** (`GET /api/validation/loso`) refits a calibration on the *n−1* CPCB/MPCB CAAQMS stations and scores the held-out one, so `rmse_score` is a genuine unseen-station estimate (a documented reference RMSE is shown — flagged `estimated: true` — when the active bbox contains fewer than 4 stations).
+7. **Serve** — FastAPI job API + Vite/Leaflet dual-map frontend; results exportable as NetCDF/GeoJSON/CSV/GeoTIFF.
+
+### Fetching 1 km grids without tripping the upstream rate limit
+
+The analysis grid is 0.01°, but data is downloaded on a coarser **0.05° fetch
+grid** and bilinearly resampled onto it (the fetch bbox is padded by one fetch
+cell so no fine cell falls outside the interpolation stencil). London drops from
+**101 → 6 chunked requests per pass**, Mumbai **75 → 5**, which is what keeps
+Open-Meteo's hourly quota reachable. `fetch.py` also backs off on 429/5xx,
+honours `Retry-After`, paces chunks, and fails fast with the provider's own
+reason when the hourly window is genuinely exhausted.
+
+> **Note:** an axis-order bug in `fetch.py` (returns were point-major while
+> `dataset.py` read them time-major) scrambled the spatial grid — every map row
+> held one point's time series instead of geography. Fixed by transposing at the
+> two return sites; all previously reported metrics predate that fix and are not
+> comparable with current output.
+
+### How much data a Fetch moves (measured)
+
+Request count scales with **area** — points on the 0.05° fetch grid, 40 per
+chunk — *not* with the date range; a longer window only makes each response
+bigger. Latency is dominated by the meteorology endpoint:
+
+| Pass | points | chunks/source | requests/pass | payload/pass | wall time |
+| --- | --- | --- | --- | --- | --- |
+| Mumbai (0.60°×0.50°) | 168 | 5 | ~16 (AQ + WX + DEM) | ~2.6 MB | ~2 min |
+| London (0.84°×0.48°) | 240 | 6 | ~25 | ~3.2 MB | ~2.5 min |
+| Mumbai Suburbs (0.14°) | 25 | 1 | ~3 | ~0.6 MB | ~25 s |
+
+Per chunk of 40 points / 7 days (Open-Meteo, 2026-09): air quality **1.4–3.9 s
+& 166 KiB**, weather (7 hourly variables) **~17.5 s & 350 KiB**, elevation
+**2.5–4.3 s & 0.5 KiB/100 pts**. So **3–7 days is the sweet spot**: going from
+7 → 30 days adds no requests at all (same chunks), just ~4× the payload, while
+wall time barely moves because latency — not bytes — dominates. Local artifacts
+confirm it: `cache/datasets/` is 5.2 MB in total (largest 2.9 MB), `artifacts/`
+17 MB. Doubling the *bbox* on each side, by contrast, quadruples points, chunks
+and requests — that is the number to watch.
+
+### Road density: a local OSM extract instead of Overpass
+
+`road_density` used to come from the Overpass API, which issues **no API key at
+all** (there is no way to buy a higher rate limit) and currently answers every
+mirror with a 45–52 s stall or HTTP 504/406 — a Fetch job spent **~194 s** to
+fetch 3 of 4 quadrants and still reported *no roads*. `osm_local.py` replaces
+it with a one-time HTTPS download of the matching **Geofabrik** extract (no key,
+no rate limit) read locally by **DuckDB**'s `st_readosm()`:
+
+| Preset | Geofabrik extract | Size |
+| --- | --- | --- |
+| Mumbai / Mumbai Suburbs / Nagpur | `india/western-zone-latest` | 210 MB |
+| Delhi | `india/northern-zone-latest` | 213 MB |
+| London | `england/greater-london-latest` | 123 MB |
+| Paris | `france/ile-de-france-latest` | 323 MB |
+
+The right extract is chosen by reading each candidate file's **first ~8 KB** —
+a PBF header carries the extract's own bounding box — so selection costs eight
+8 KB requests and never a download; only the chosen file (cached in
+`cache/pbf/`) is fetched. Mumbai's roads then take **2.2 s warm / ~20 s cold**
+instead of a timeout, `sources.roads` reports
+`OpenStreetMap Geofabrik extract (ODbL, local)`, and the degraded-feature
+warning disappears.
+
+```bash
+cd backend
+uv run scripts/preload_osm.py mumbai     # prefetch before a demo
+uv run scripts/preload_osm.py --list     # candidate extracts + their bboxes
+```
+
+Overpass stays as the fallback for any bbox no extract covers (custom regions,
+cities outside the listed zones), and a good cached grid is always preferred.
 
 ## Available solutions (prior art) — and the gap
 
@@ -71,9 +141,18 @@ npm run dev             # http://localhost:5173  (proxies /api → :8000)
 
 Open http://localhost:5173, then:
 
-1. **Fetch coarse data** — the region defaults to **Mumbai** (our local test bed); London/Paris are the validation benchmarks, Delhi is transfer-only.
+1. **Fetch coarse data** — pick any of the **129 indexed Indian cities** from the
+   searchable selector (defaults to **Nagpur**) or a benchmark preset; London/Paris
+   are the supervised benchmarks, Mumbai is our local test bed (transfer mode).
+   A full-screen progress overlay cycles *Fetching Sentinel‑5P → Imputing Gaps →
+   Applying XGBoost → Rendering 1km Grid*.
 2. **Train & downscale** — pick a model + holdout split; watch progress live.
-3. Explore layers, scrub the timeline, read the metrics cards, and **Download NetCDF**.
+   The **Live Downscaling** tab shows the synced dual maps with the persistent
+   metrics panel (XGBoost + Kriging, LOSO protocol, live RMSE).
+3. **72‑Hour Prediction** tab — full-width map with a Now → +72 Hrs slider, a red
+   GRAP alert that arms at **+48 Hrs**, and a *Simulate 40% Traffic Drop* what-if.
+4. Explore layers, scrub the timeline, read the metrics cards, and **Export
+   Dataset (GeoTIFF/CSV)** from the header.
 
 > **Fresh checkout note:** Mumbai has no independent local reference, so its *Train*
 > button is disabled on a fresh clone. Fetch **London** (7 days) and *Train* once
@@ -89,6 +168,9 @@ uv run scripts/smoke.py london 7          # preset, days, [model]
 `cd frontend && npm run build` type-checks and builds the UI for production.
 
 ## Results (reference run)
+
+> These figures predate the `fetch.py` axis-order fix described above and are
+> **not** comparable with current output — re-run `scripts/smoke.py` to refresh.
 
 London, 7 days (2026‑09‑19 → 09‑25), Random Forest, holdout = unseen blocks + time,
 scoring on 2,040 held-out samples:
@@ -127,6 +209,9 @@ whenever a reference exists).
 | `GET /api/export/netcdf` | NetCDF export of the current result |
 | `GET /api/export/geojson` | GeoJSON polygon feature collection export |
 | `GET /api/export/csv` | Tabular CSV export of downscaled predictions |
+| `GET /api/export/geotiff` | GeoTIFF export (EPSG:4326, deflate) — needs `uv add rasterio` |
+| `GET /api/cities` | Indexed cities + bboxes for the searchable city selector |
+| `GET /api/validation/loso` | Leave-One-Station-Out cross-validation: `rmse_score`, per-station folds |
 
 All long operations are jobs: they return `{job_id}` immediately and report
 `progress` + human-readable `stage` (e.g. `evaluating Random Forest (1/6)`).
@@ -135,9 +220,19 @@ All long operations are jobs: they return `{job_id}` immediately and report
 ## Data sources
 
 Everything is **API-key-free**: Open‑Meteo Air Quality & Forecast (CAMS,
-ECMWF), Open‑Meteo DEM, OpenStreetMap Overpass (road density) and OSM raster
-tiles. Data © Copernicus/Open‑Meteo open services, © OpenStreetMap contributors
-(ODbL).
+ECMWF), Open‑Meteo DEM, Geofabrik OSM extracts read with DuckDB (road density;
+Overpass as fallback) and OSM raster tiles. Data © Copernicus/Open‑Meteo open
+services, © OpenStreetMap contributors (ODbL).
+
+*Keys, if we ever need one:* Open‑Meteo's free tier is non-commercial and
+limited to 600 calls/min, 5,000/h, 10,000/day, 300,000/month — at ~16–25
+requests per Fetch we are two orders of magnitude below that. Its paid
+Standard/Professional/Enterprise plans issue an **API key** for
+`customer-api.open-meteo.com` with unlimited per-minute/hourly limits, reserved
+servers and a commercial licence. Native Sentinel‑5P L2 would require a
+**Copernicus Data Space Ecosystem** account (OAuth2 token), NASA Earthdata for
+VIIRS/MODIS, and OpenAQ for station feeds. OSM Overpass and Geofabrik issue no
+keys at all — one more reason road density moved to a local extract.
 
 ## Repository layout
 
@@ -146,12 +241,14 @@ backend/
   src/backend/         FastAPI app + pipeline modules
     config.py          presets, models, splits, API endpoints
     fetch.py           keyless downloads (NO₂/met/DEM/OSM)
+    osm_local.py       Geofabrik PBF header parsing + DuckDB road density
     dataset.py         orchestration, cloud mask, gap-fill, caching
     features.py        23-feature matrix builder
     training.py        splits, fit, predict, conservation, metrics
     artifacts.py       meta/layers/NetCDF export
     validation.py      station CSV validation
   scripts/smoke.py     headless end-to-end test
+  scripts/preload_osm.py  prefetch a Geofabrik extract (`--list` for candidates)
   cache/, artifacts/   generated (git-ignored)
 frontend/
   src/main.ts          workflow glue, job polling, map rendering
@@ -174,6 +271,8 @@ docs/                  pipeline & result screenshots
   elsewhere validation is transfer-mode or station-CSV based.
 - Heavily overcast windows (e.g. Mumbai monsoon) end up mostly gap-filled —
   the UI always shows the repaired fraction so this can't hide.
-- OSM road density is best-effort (Overpass is flaky; failures are cached and
-  reported as a degraded-feature warning).
+- OSM road density is best-effort: it comes from a **local Geofabrik extract**
+  when one covers the bbox (the Mumbai/Delhi/London/Paris presets all do) and
+  falls back to Overpass otherwise; if neither works the feature is dropped for
+  that run, cached and reported as a degraded-feature warning.
 - Research prototype — not a health advisory.

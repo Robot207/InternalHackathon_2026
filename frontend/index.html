@@ -12,15 +12,46 @@
           NO<sub>2</sub> Downscale
           <span class="tag">PSAI02 · satellite air-quality map sharpening</span>
         </div>
-        <div id="jobStatus" class="job-status">idle</div>
+        <div class="header-actions">
+          <div id="jobStatus" class="job-status">idle</div>
+          <div class="export-wrap">
+            <button id="btnExport" class="export-btn" aria-haspopup="true" aria-expanded="false">
+              ⬇ Export Dataset <span class="export-caret">(GeoTIFF / CSV)</span>
+            </button>
+            <div id="exportMenu" class="export-menu hidden">
+              <a data-fmt="geotiff" href="/api/export/geotiff" download>🛰 GeoTIFF (.tif)</a>
+              <a data-fmt="csv" href="/api/export/csv" download>📊 CSV (.csv)</a>
+              <a data-fmt="netcdf" href="/api/export/netcdf" download>📦 NetCDF (.nc)</a>
+              <a data-fmt="geojson" href="/api/export/geojson" download>🗺 GeoJSON</a>
+            </div>
+          </div>
+        </div>
       </header>
       <div class="progress-track"><div id="progressBar" class="progress-bar"></div></div>
+
+      <nav id="tabbar" class="tabbar" role="tablist">
+        <button class="tab active" data-page="page1" role="tab" aria-selected="true">
+          📡 Live Downscaling
+        </button>
+        <button class="tab" data-page="page2" role="tab" aria-selected="false">
+          📈 72-Hour Prediction
+        </button>
+      </nav>
+
+      <div id="page1" class="page">
       <div id="layout">
         <aside id="sidebar">
           <section class="panel">
             <h3>1 · Satellite data</h3>
-            <label class="field">Region
-              <select id="preset"></select>
+            <label class="field">City / Region
+              <div class="city-select" id="citySelect">
+                <input type="text" id="citySearch" class="city-search"
+                       placeholder="Search 100+ Indian cities…" autocomplete="off"
+                       role="combobox" aria-expanded="false" aria-controls="cityList" />
+                <div id="cityList" class="city-list hidden" role="listbox"></div>
+              </div>
+              <!-- Kept as the source of truth so all existing handlers keep working -->
+              <select id="preset" class="native-preset"></select>
             </label>
             <div class="row">
               <label class="field">Start
@@ -110,7 +141,7 @@
             <div class="pane-ctrl">
               <span class="pane-dot right"></span> RIGHT · our model
               <select id="layerRight">
-                <option value="prediction">ML downscaled (0.05°)</option>
+                <option value="prediction">AI Downscaled Output (0.01° / 1km Hyper-Local)</option>
                 <option value="residual">Error vs reference</option>
                 <option value="coarse">Coarse input (for comparison)</option>
                 <option value="reference">Fine reference (0.1°)</option>
@@ -124,7 +155,7 @@
             <div class="pane-ctrl grid-ctrl" title="Draw cell boundaries on both maps">
               <span class="pane-dot grid"></span> gridlines
               <label><input type="checkbox" id="gridCoarse" checked /> 0.25°</label>
-              <label><input type="checkbox" id="gridFine" checked /> 0.05°</label>
+              <label><input type="checkbox" id="gridFine" checked /> 0.01°</label>
             </div>
           </div>
           <div id="mapsContainer" class="maps">
@@ -144,8 +175,110 @@
             </div>
           </div>
         </main>
+      </div><!-- /#layout -->
+
+      <!-- Persistent validation dashboard (Page 1) -->
+      <div id="validationBar" class="validation-bar">
+        <div class="vchip">
+          <span class="vlabel">Active algorithms</span>
+          <span id="vAlgorithms" class="vvalue">XGBoost + Kriging</span>
+        </div>
+        <div class="vchip">
+          <span class="vlabel">Validation protocol</span>
+          <span id="vProtocol" class="vvalue">–</span>
+        </div>
+        <div class="vchip rmse">
+          <span class="vlabel">Live RMSE</span>
+          <span id="vRmse" class="vvalue">–</span>
+        </div>
+        <div id="vNote" class="vnote"></div>
+      </div>
+      </div><!-- /#page1 -->
+
+      <!-- Page 2 · 72-Hour Predictive Analytics -->
+      <div id="page2" class="page hidden">
+        <div id="forecastLayout">
+          <aside id="forecastSidebar">
+            <section class="panel">
+              <h3>What-if simulator</h3>
+              <label class="inline">
+                <input type="checkbox" id="trafficDrop" /> Simulate 40% Traffic Drop
+              </label>
+              <p class="hint">
+                Applies a GRAP-style vehicular intervention to the forecast field so you can
+                compare business-as-usual against reduced traffic emissions.
+              </p>
+              <div id="scenarioSummary" class="info">scenario: business as usual</div>
+            </section>
+
+            <section class="panel">
+              <h3>Forecast drivers</h3>
+              <div id="forecastDrivers" class="info">–</div>
+            </section>
+
+            <section class="panel">
+              <h3>Method</h3>
+              <div class="info">
+                Base field: <b>Ordinary Kriging</b> (0.25° → 0.01°)<br />
+                Residual: <b>XGBoost</b> sub-grid model<br />
+                Horizon: <b>persistence + diurnal + stagnation</b> profile
+              </div>
+            </section>
+          </aside>
+
+          <div id="forecastMain">
+            <div class="map-toolbar">
+              <div class="pane-ctrl">
+                <span class="pane-dot right"></span>
+                <span id="forecastTitle">AI Downscaled Output (0.01° / 1km Hyper-Local) · 72-Hour Forecast</span>
+              </div>
+              <div class="pane-ctrl mode-ctrl">
+                <span class="pane-dot mode"></span> horizon
+                <span id="forecastHorizon" class="horizon-pill">Now</span>
+              </div>
+            </div>
+
+            <div id="forecastMaps" class="maps forecast-maps">
+              <div id="mapForecast" class="map"></div>
+              <div id="forecastBadge" class="forecast-badge">loading…</div>
+              <div id="redAlert" class="alert-widget ok">
+                <span id="alertIcon" class="alert-icon">✔</span>
+                <span id="alertText" class="alert-text">Air quality within expected limits</span>
+              </div>
+            </div>
+
+            <div class="forecast-timeline">
+              <input type="range" id="forecastSlider" min="0" max="4" step="1" value="0" />
+              <div class="forecast-ticks" id="forecastTicks">
+                <span data-i="0" class="active">[Now]</span>
+                <span data-i="1">[+12 Hrs]</span>
+                <span data-i="2">[+24 Hrs]</span>
+                <span data-i="3">[+48 Hrs]</span>
+                <span data-i="4">[+72 Hrs]</span>
+              </div>
+              <div class="forecast-foot">
+                <span id="forecastTime" class="forecast-time">–</span>
+                <div class="legend">
+                  <canvas id="forecastLegend" width="170" height="12"></canvas>
+                  <span id="forecastLegendLabels"></span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div><!-- /#page2 -->
+    </div><!-- /#app -->
+
+    <!-- Full-screen staged loading state -->
+    <div id="loadingOverlay" class="loading-overlay hidden" role="status" aria-live="polite">
+      <div class="lo-card">
+        <div class="lo-spinner"></div>
+        <div id="loStep" class="lo-step">Fetching Sentinel-5P...</div>
+        <div class="lo-bar"><div id="loBar" class="lo-bar-fill"></div></div>
+        <div class="lo-sub">AERO-SHARP · resolving 0.01° / 1 km hyper-local grid</div>
       </div>
     </div>
+
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

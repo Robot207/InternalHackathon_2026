@@ -75,9 +75,18 @@ export function createPane(el: HTMLElement): Pane {
 
 export function syncMaps(a: LeafletMap, b: LeafletMap): void {
   let guard = false
+  // A map that is inside a hidden tab reports 0x0 — never push view state into
+  // it, otherwise Leaflet throws and the sync loop dies.
+  const usable = (m: LeafletMap) => {
+    const el = m.getContainer()
+    if (!el.offsetParent && el.style.position !== 'fixed') return false
+    const s = m.getSize()
+    return s.x > 0 && s.y > 0
+  }
   const mirror = (src: LeafletMap, dst: LeafletMap) => {
     src.on('move zoom', () => {
       if (guard) return
+      if (!usable(src) || !usable(dst)) return
       guard = true
       dst.setView(src.getCenter(), src.getZoom(), { animate: false })
       guard = false

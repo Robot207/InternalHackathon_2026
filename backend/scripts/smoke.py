@@ -6,6 +6,7 @@ import sys
 import time
 
 from backend import artifacts
+from backend.config import DEFAULT_FINE_STEP
 from backend.dataset import build_dataset, load_dataset
 from backend.training import run_training
 
@@ -26,7 +27,7 @@ def main() -> None:
             last[0], last[1] = stage, p
 
     print(f"dataset: preset={preset} {start}..{end}")
-    summary = build_dataset(preset, start, end, 0.05, progress=progress)
+    summary = build_dataset(preset, start, end, DEFAULT_FINE_STEP, progress=progress)
     print(
         f"  cells={summary['n_lat']}x{summary['n_lon']} hours={summary['n_times']} "
         f"gap={summary['gap_fraction']:.1%} ref={summary['has_reference']} "

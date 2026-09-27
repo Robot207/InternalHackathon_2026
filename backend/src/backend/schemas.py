@@ -9,9 +9,13 @@ from .config import DEFAULT_CLOUD_THRESHOLD, DEFAULT_FINE_STEP
 
 class FetchRequest(BaseModel):
     preset: str = "london"
+    # Optional Indian-city selector. When present it wins over `preset` and the
+    # dataset is cropped to that city's bounding box (see backend.cities).
+    city: str | None = None
     start_date: str | None = None
     end_date: str | None = None
-    fine_step: float = Field(default=DEFAULT_FINE_STEP, gt=0.01, le=0.2)
+    # ge= (not gt=) so the 0.01 deg / ~1 km target resolution is accepted.
+    fine_step: float = Field(default=DEFAULT_FINE_STEP, ge=0.01, le=0.2)
     cloud_threshold: float = Field(default=DEFAULT_CLOUD_THRESHOLD, ge=0, le=100)
     force: bool = False
 

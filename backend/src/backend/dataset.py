@@ -6,8 +6,30 @@ import json
 import numpy as np
 
 from . import fetch as fch
-from .config import CITIES, DATASET_DIR, DEFAULT_CLOUD_THRESHOLD, MAX_DAYS, PRESETS
-from .grids import block_mean, make_grid
+from .config import (
+    CITIES,
+    DATASET_DIR,
+    DEFAULT_CLOUD_THRESHOLD,
+    FETCH_STEP,
+    MAX_DAYS,
+    PRESETS,
+)
+from .grids import block_mean, make_grid, upsample
+
+
+def _resample(arr: np.ndarray, fgrid: dict, grid: dict) -> np.ndarray:
+    """Bilinearly interpolate fetch-grid samples (axis 1/2) onto the fine grid."""
+    if fgrid is grid:
+        return arr
+    return upsample(
+        arr,
+        {
+            "clats": fgrid["lats"],
+            "clons": fgrid["lons"],
+            "lats": grid["lats"],
+            "lons": grid["lons"],
+        },
+    )
 
 
 def dataset_key(preset: str, start: str, end: str, step: float, cloud_threshold: float) -> str:
@@ -55,9 +77,28 @@ def build_dataset(
 
     cfg = PRESETS[preset]
     grid = make_grid(cfg["bbox"], fine_step)
-    lats = np.repeat(grid["lats"], grid["W"])
-    lons = np.tile(grid["lons"], grid["H"])
     h, w = grid["H"], grid["W"]
+    # Data are fetched on the (much smaller) 0.05 deg fetch grid and bilinearly
+    # resampled onto the 0.01 deg analysis grid. At 0.01 deg a city is thousands
+    # of points, which is dozens of chunked upstream requests per pass and trips
+    # the provider's HTTP 429 limiter; the fetch grid keeps each pass at a handful
+    # of requests while the output resolution stays at ~1 km.
+    fetch_step = max(fine_step, FETCH_STEP)
+    if fetch_step == fine_step:
+        fgrid = grid
+    else:
+        # Grow the fetch bbox by one full fetch cell so the fetch cell centres
+        # always bracket every fine cell centre. Without a margin the fine
+        # grid's outer ring lies outside the fetch grid and bilinear
+        # interpolation clamps it to the nearest edge value (a constant border).
+        pad = fetch_step
+        lo0, la0, lo1, la1 = cfg["bbox"]
+        fgrid = make_grid([lo0 - pad, la0 - pad, lo1 + pad, la1 + pad], fetch_step)
+    if fgrid["H"] < 2 or fgrid["W"] < 2:
+        fgrid = grid  # bbox smaller than one fetch cell: fetch at full resolution
+    fh, fw = fgrid["H"], fgrid["W"]
+    lats = np.repeat(fgrid["lats"], fw)
+    lons = np.tile(fgrid["lons"], fh)
     warnings: list[str] = []
 
     report(0.02, "starting fetch")
@@ -67,7 +108,7 @@ def build_dataset(
             ref_flat, times = fch.fetch_air_quality(
                 lats, lons, start_date, end_date, "cams_europe", ["nitrogen_dioxide"], report
             )
-            ref = ref_flat[:, :, 0].reshape(-1, h, w)
+            ref = ref_flat[:, :, 0].reshape(-1, fh, fw)
         except Exception as exc:  # noqa: BLE001
             warnings.append(f"fine reference fetch failed: {exc}")
     if ref.shape[0] == 0:
@@ -78,7 +119,7 @@ def build_dataset(
     coarse_flat, times = fch.fetch_air_quality(
         lats, lons, start_date, end_date, "cams_global", ["nitrogen_dioxide"], report
     )
-    coarse_fine = coarse_flat[:, :, 0].reshape(-1, h, w)
+    coarse_fetch = coarse_flat[:, :, 0].reshape(-1, fh, fw)
 
     wx_flat, wx_times = fch.fetch_weather(lats, lons, start_date, end_date, report)
     if wx_times != times:
@@ -91,21 +132,28 @@ def build_dataset(
         pos = {t: i for i, t in enumerate(times)}
         keep = [pos[t] for t in common]
         times = common
-        coarse_fine = coarse_fine[keep]
+        coarse_fetch = coarse_fetch[keep]
         if ref is not None:
             ref = ref[keep]
         wx_keep = [wx_times.index(t) for t in common]
         wx_flat = wx_flat[wx_keep]
     n_t = len(times)
-    wx = wx_flat.reshape(n_t, h, w, -1)
 
-    elev = fch.fetch_elevation(lats, lons, report)
-    elev = elev.reshape(h, w)
-    roads, roads_ok = fch.fetch_road_density(
+    # Everything above was fetched on the coarse fetch grid; resample it onto
+    # the 0.01 deg analysis grid that the model actually trains and renders on.
+    coarse_fine = _resample(coarse_fetch, fgrid, grid)
+    if ref is not None:
+        ref = _resample(ref, fgrid, grid)
+    wx = _resample(wx_flat.reshape(n_t, fh, fw, -1), fgrid, grid)
+
+    elev = _resample(fch.fetch_elevation(lats, lons, report).reshape(1, fh, fw), fgrid, grid)[0]
+    roads, roads_ok, roads_source = fch.fetch_road_density(
         cfg["bbox"], grid["lats"], grid["lons"], fine_step, preset, report
     )
     if not roads_ok:
-        warnings.append("OSM road density unavailable (Overpass outage); feature set degraded")
+        warnings.append(
+            "OSM road density unavailable (no local extract and Overpass outage); feature set degraded"
+        )
 
     temp = wx[..., 0]
     spd = wx[..., 1]
@@ -192,7 +240,7 @@ def build_dataset(
             "fine_reference": "Open-Meteo CAMS European (0.1 deg)" if ref is not None else None,
             "meteorology": "Open-Meteo (ECMWF/KNMI model blend)",
             "elevation": "Open-Meteo DEM",
-            "roads": "OpenStreetMap Overpass (ODbL)" if roads_ok else None,
+            "roads": roads_source if roads_ok else None,
         },
         "warnings": warnings,
         "cached": False,

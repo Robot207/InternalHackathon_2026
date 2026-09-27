@@ -4,9 +4,15 @@ import type { LayerGroup, LatLngBoundsExpression, Polyline } from 'leaflet'
 import './style.css'
 
 import { api, pollJob } from './api'
+import { initCitySelect, syncCitySelect } from './citySelect'
+import { initExportMenu } from './exportMenu'
+import { initForecast, refreshForecast } from './forecast'
 import { frameAt, frameToUrl } from './gridImage'
+import { runLoadingSequence } from './loadingOverlay'
 import { createPane, syncMaps, type MarkerData, type Pane } from './map'
-import type { AppConfig, BenchmarkArenaResponse, Job, Layers, Meta, StationBenchmarkResponse, Summary } from './types'
+import { initTabs } from './tabs'
+import { refreshValidation, renderValidation } from './validationPanel'
+import type { AppConfig, BenchmarkArenaResponse, Job, Layers, Meta, Preset, StationBenchmarkResponse, Summary } from './types'
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T
 
@@ -58,6 +64,7 @@ async function runJob(
     setProgress(1)
     status(`${label} ✓`)
     await done(job)
+    void refreshValidation()
   } catch (err) {
     status(err instanceof Error ? err.message : String(err), true)
     setProgress(0)
@@ -451,6 +458,8 @@ async function refreshState(): Promise<void> {
       sel.value = s.preset
     }
   }
+  syncCitySelect()
+  renderValidation(st.validation)
   renderDataInfo()
   renderWarnings()
   renderMetrics()
@@ -463,7 +472,9 @@ function setPresetDefaults(): void {
   const p = config.presets.find((x) => x.id === id)
   if (!p) return
   const bounds = layerBoundsFor(p.bbox)
-  if (layers === null) leftPane.fit(bounds)
+  // Always frame the newly selected city: loaded results may belong to a
+  // different domain, and leaving the map on the old one looks broken.
+  leftPane.fit(bounds)
   void loadBenchmarkStations(false)
 }
 
@@ -472,6 +483,12 @@ function layerBoundsFor(bbox: number[]): LatLngBoundsExpression {
     [bbox[1], bbox[0]],
     [bbox[3], bbox[2]],
   ])
+}
+
+/** Currently selected preset (city), or null before config has loaded. */
+function activePreset(): Preset | null {
+  const id = $<HTMLSelectElement>('preset').value
+  return config?.presets.find((p) => p.id === id) ?? null
 }
 
 async function inspectPointAt(lat: number, lon: number): Promise<void> {
@@ -790,6 +807,33 @@ async function init(): Promise<void> {
   }
   splitSel.value = config.defaults.split
 
+  // --- feature modules -------------------------------------------------
+  initTabs((page) => {
+    if (page === 'page2') {
+      refreshForecast()
+    } else {
+      leftPane.map.invalidateSize()
+      rightPane.map.invalidateSize()
+    }
+  })
+
+  initExportMenu((text, isError) => status(text, !!isError))
+
+  initForecast({ getLayers: () => layers, getActivePreset: activePreset })
+
+  // Searchable 100+ city combobox layered over the native <select id="preset">.
+  initCitySelect((id) => {
+    void (async () => {
+      status(`switching to ${config.presets.find((p) => p.id === id)?.label ?? id}…`)
+      // Full-screen staged animation (~2s) before the map repaints.
+      await runLoadingSequence(2000)
+      setPresetDefaults()
+      updateButtons()
+      await refreshValidation(id)
+      status('ready')
+    })()
+  })
+
   const end = new Date()
   end.setUTCDate(end.getUTCDate() - 1)
   const start = new Date(end)
@@ -801,6 +845,7 @@ async function init(): Promise<void> {
   const loaded = summary ? await loadLayers() : false
   if (!loaded) leftPane.fit(layerBoundsFor(config.presets.find((p) => p.id === presetSel.value)!.bbox))
   status(summary ? 'previous results loaded' : 'ready')
+  void refreshValidation(presetSel.value)
 
   $('btnFetch').addEventListener('click', () => {
     void runJob(
@@ -860,6 +905,7 @@ async function init(): Promise<void> {
   presetSel.addEventListener('change', () => {
     setPresetDefaults()
     updateButtons()
+    void refreshValidation(presetSel.value)
   })
   ;($('layerLeft') as HTMLSelectElement).addEventListener('change', renderOverlays)
   ;($('layerRight') as HTMLSelectElement).addEventListener('change', renderOverlays)

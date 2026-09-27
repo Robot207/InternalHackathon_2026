@@ -7,6 +7,7 @@ import numpy as np
 from .config import CITIES
 from .fetch import nearest_city_distance
 from .grids import neighbor_stats, upsample
+from .kriging import kriging_upsample
 
 STATIC_FEATURES = ["elevation", "road_density", "lon_norm", "lat_norm", "dist_city_km"]
 TIME_FEATURES = ["hour_sin", "hour_cos", "dow_sin", "dow_cos"]
@@ -32,7 +33,9 @@ def build_features(data: dict) -> dict:
     times = [str(t) for t in np.asarray(data["times"]).tolist()]
     grid = _grid_from(data)
 
-    c_up = upsample(coarse_filled, grid)
+    # Ordinary Kriging (not bilinear) carries the coarse field onto the fine grid.
+    # XGBoost then learns the sub-grid log-residual on top -> "XGBoost + Kriging".
+    c_up = kriging_upsample(coarse_filled, grid)
     nb = neighbor_stats(coarse_filled)
     nb_up = {k: upsample(v, grid) for k, v in nb.items()}
     gap_up = upsample(gap, grid)

@@ -57,6 +57,11 @@ export const api = {
     request<import('./types').PointInspectResult>(
       `/api/point/inspect?lat=${lat.toFixed(5)}&lon=${lon.toFixed(5)}`,
     ),
+  cities: () => request<import('./types').CityListResponse>('/api/cities'),
+  loso: (preset?: string) =>
+    request<import('./types').Validation>(
+      `/api/validation/loso${preset ? `?preset=${encodeURIComponent(preset)}` : ''}`,
+    ),
 }
 
 

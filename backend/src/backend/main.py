@@ -8,12 +8,17 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 
 from . import artifacts, jobs
-from .config import ARTIFACT_DIR, BASE_DIR, MODELS, PRESETS, SPLITS
+from .cities import DEFAULT_CITY, city_list, register_cities, resolve_city
+from .config import ARTIFACT_DIR, BASE_DIR, DEFAULT_FINE_STEP, MODELS, PRESETS, SPLITS
 from .dataset import build_dataset, dataset_paths, load_dataset
+from .losocv import ALGORITHMS, run_loso, validation_summary
 from .schemas import ApplyRequest, FetchRequest, TrainRequest
 from .stations import evaluate_built_in_stations, get_stations_and_landmarks
 from .training import run_apply, run_benchmark_arena, run_training
 from .validation import validate_station_csv
+
+# Fold the Indian-city bounding boxes into PRESETS before any request is served.
+register_cities()
 
 app = FastAPI(title="NO2 Satellite Downscaling API", version="0.1.0")
 
@@ -61,30 +66,67 @@ def get_config() -> dict:
             }
             for k, v in PRESETS.items()
         ],
-        "defaults": {"model": "random_forest", "split": "spatiotemporal", "preset": "mumbai"},
+        "defaults": {
+            "model": "xgboost",
+            "split": "spatiotemporal",
+            "preset": "mumbai",
+            "city": DEFAULT_CITY,
+        },
+        "target_resolution": {
+            "fine_step": DEFAULT_FINE_STEP,
+            "label": f"{DEFAULT_FINE_STEP}° / ~1 km hyper-local",
+            "coarse_step": 0.25,
+        },
+        "algorithms": ALGORITHMS,
+        "n_cities": len(PRESETS),
     }
+
+
+@app.get("/api/cities")
+def get_cities() -> dict:
+    """Bounding boxes (min_lat/max_lat/min_lon/max_lon) for every indexed city."""
+    return {
+        "default": DEFAULT_CITY,
+        "count": len(city_list()),
+        "cities": city_list(),
+    }
+
+
+@app.get("/api/validation/loso")
+def get_loso(preset: str | None = None) -> dict:
+    """Leave-One-Station-Out cross-validation metrics for the active domain."""
+    return run_loso(preset)
 
 
 @app.get("/api/state")
 def get_state() -> dict:
+    summary = STATE.get("summary")
     return {
-        "summary": STATE.get("summary"),
+        "summary": summary,
         "meta": STATE.get("meta"),
         "has_model": artifacts.has_model(),
         "has_predictions": artifacts.has_predictions(),
         "has_layers": artifacts.layers_file().exists(),
+        "validation": validation_summary(summary.get("preset") if summary else None),
     }
 
 
 @app.post("/api/fetch")
 def fetch(req: FetchRequest) -> dict:
-    if req.preset not in PRESETS:
-        raise HTTPException(400, f"unknown preset '{req.preset}'")
+    # `city` wins over `preset` so the UI can crop to an arbitrary Indian bbox.
+    target = req.preset
+    if req.city:
+        resolved = resolve_city(req.city)
+        if not resolved:
+            raise HTTPException(400, f"unknown city '{req.city}'")
+        target = resolved[0]
+    if target not in PRESETS:
+        raise HTTPException(400, f"unknown preset '{target}'")
     start, end = req.resolve_dates()
 
     def job(progress) -> dict:
         summary = build_dataset(
-            req.preset,
+            target,
             start,
             end,
             req.fine_step,
@@ -158,6 +200,9 @@ def result_meta() -> dict:
     meta = artifacts.read_meta()
     if not meta:
         raise HTTPException(404, "no result yet")
+    # Every result carries its validation envelope so the UI never has to guess.
+    meta = dict(meta)
+    meta["validation"] = validation_summary(meta.get("preset"))
     return meta
 
 
@@ -264,6 +309,30 @@ def export_csv_endpoint() -> FileResponse:
         path,
         media_type="text/csv",
         filename=f"no2_downscaled_{summary.get('preset', 'mumbai')}.csv",
+    )
+
+
+@app.get("/api/export/geotiff")
+def export_geotiff_endpoint() -> FileResponse:
+    """GeoTIFF export.
+
+    Requires ``rasterio`` (``uv add rasterio``). Until it is present the endpoint
+    answers 501 with a clear message so the UI can fall back to NetCDF rather
+    than silently serving a mislabelled file.
+    """
+    summary = STATE.get("summary")
+    if not artifacts.has_predictions() or summary is None:
+        raise HTTPException(404, "no prediction layers yet")
+    try:
+        path = artifacts.export_geotiff(summary)
+    except ImportError as exc:
+        raise HTTPException(501, f"GeoTIFF unavailable: {exc}") from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(500, f"GeoTIFF export failed: {exc}") from exc
+    return FileResponse(
+        path,
+        media_type="image/tiff",
+        filename=f"no2_downscaled_{summary.get('preset', 'city')}.tif",
     )
 
 
