@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>NO2 Downscale · PSAI02</title>
+  </head>
+  <body>
+    <div id="app">
+      <header>
+        <div class="brand">
+          NO<sub>2</sub> Downscale
+          <span class="tag">PSAI02 · satellite air-quality map sharpening</span>
+        </div>
+        <div id="jobStatus" class="job-status">idle</div>
+      </header>
+      <div class="progress-track"><div id="progressBar" class="progress-bar"></div></div>
+      <div id="layout">
+        <aside id="sidebar">
+          <section class="panel">
+            <h3>1 · Satellite data</h3>
+            <label class="field">Region
+              <select id="preset"></select>
+            </label>
+            <div class="row">
+              <label class="field">Start
+                <input type="date" id="startDate" />
+              </label>
+              <label class="field">End
+                <input type="date" id="endDate" />
+              </label>
+            </div>
+            <label class="field">Cloud cutoff (%)
+              <input type="number" id="cloudThreshold" min="0" max="100" value="60" />
+            </label>
+            <button id="btnFetch" class="primary">⬇ Fetch coarse data</button>
+            <div id="dataInfo" class="info">no dataset loaded</div>
+          </section>
+
+          <section class="panel">
+            <h3>2 · Model</h3>
+            <label class="field">Algorithm
+              <select id="model"></select>
+            </label>
+            <label class="field">Validation holdout
+              <select id="split"></select>
+            </label>
+            <label class="inline"><input type="checkbox" id="conserve" checked /> keep satellite pixel totals (mass conservation)</label>
+            <button id="btnTrain" class="primary">🧠 Train &amp; downscale</button>
+            <button id="btnApply" class="secondary" title="Re-run the trained model on the currently fetched region without retraining. Switch Region to Delhi + Fetch first to see cross-region transfer.">🚀 Apply trained model (transfer)</button>
+            <div id="warnings" class="warnings"></div>
+          </section>
+
+          <section class="panel" id="metricsPanel">
+            <h3>3 · Validation on unseen data</h3>
+            <div id="metrics" class="cards">run training to see metrics</div>
+            <div class="row2">
+              <div>
+                <h4>Prediction vs reference</h4>
+                <svg id="scatter" viewBox="0 0 210 210"></svg>
+              </div>
+              <div>
+                <h4>Feature importance</h4>
+                <div id="importance"></div>
+              </div>
+            </div>
+          </section>
+
+          <section class="panel">
+            <h3>4 · Independent stations</h3>
+            <p class="hint">Upload CSV with <code>lon,lat,no2</code> columns (optional <code>time</code>) to validate against unseen station data.</p>
+            <input type="file" id="csvFile" accept=".csv" />
+            <div id="stationResult" class="info"></div>
+            <a id="exportNc" class="export" href="/api/export/netcdf" download>⬇ Download NetCDF export</a>
+          </section>
+        </aside>
+
+        <main id="main">
+          <div class="map-toolbar">
+            <div class="pane-ctrl">
+              <span class="pane-dot left"></span> LEFT · raw satellite pixel
+              <select id="layerLeft">
+                <option value="coarse">Coarse input (0.25°, gap-filled)</option>
+                <option value="coarse_bilinear">Coarse baseline (bilinear smooth)</option>
+                <option value="reference">Fine reference (0.1°)</option>
+                <option value="cloud_gap">Cloud gap mask</option>
+              </select>
+            </div>
+            <div class="pane-ctrl">
+              <span class="pane-dot right"></span> RIGHT · our model
+              <select id="layerRight">
+                <option value="prediction">ML downscaled (0.05°)</option>
+                <option value="residual">Error vs reference</option>
+                <option value="coarse">Coarse input (for comparison)</option>
+                <option value="reference">Fine reference (0.1°)</option>
+              </select>
+            </div>
+            <div class="pane-ctrl grid-ctrl" title="Draw cell boundaries on both maps">
+              <span class="pane-dot grid"></span> gridlines
+              <label><input type="checkbox" id="gridCoarse" checked /> 0.25° pixel edges</label>
+              <label><input type="checkbox" id="gridFine" checked /> 0.05° fine grid (right)</label>
+            </div>
+          </div>
+          <div class="maps">
+            <div id="mapLeft" class="map"></div>
+            <div id="mapRight" class="map"></div>
+          </div>
+          <div class="timeline">
+            <button id="btnPlay" title="play">▶</button>
+            <input type="range" id="timeSlider" min="0" max="0" value="0" />
+            <span id="timeLabel">–</span>
+            <div class="legend">
+              <canvas id="legendCanvas" width="170" height="12"></canvas>
+              <span id="legendLabels"></span>
+            </div>
+          </div>
+        </main>
+      </div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
