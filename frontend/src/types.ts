@@ -139,6 +139,7 @@ export interface ProbeResponse {
     thermo_factor: number
   }
   is_precise?: boolean
+  is_outside_region?: boolean
   exact_no2_model?: number
   exact_no2_api?: number | null
   api_series?: (number | null)[] | null

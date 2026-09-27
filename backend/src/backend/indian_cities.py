@@ -201,14 +201,66 @@ DEFAULT_CITY = "nagpur"
 
 
 def get_city_bbox(city_name_or_id: str) -> CityInfo:
-    """Retrieve city bounding box and metadata, defaulting to Nagpur."""
+    """Retrieve city bounding box and metadata, checking INDIAN_CITIES, PRESETS, and custom coords."""
     key = city_name_or_id.lower().strip().replace(" ", "_").replace("-", "_")
     if key in INDIAN_CITIES:
         return INDIAN_CITIES[key]
-    # Check partial match on name
+    from .config import PRESETS
+    if key in PRESETS:
+        p = PRESETS[key]
+        return {
+            "id": key,
+            "name": p["label"],
+            "state": "International" if key in ["london", "paris"] else "India",
+            "center": p["center"],
+            "min_lat": p["bbox"][1],
+            "max_lat": p["bbox"][3],
+            "min_lon": p["bbox"][0],
+            "max_lon": p["bbox"][2],
+            "bbox": p["bbox"],
+            "zoom": p["zoom"],
+        }
+    # Check partial match on name in INDIAN_CITIES
     for cid, info in INDIAN_CITIES.items():
         if key in cid or key in info["name"].lower():
             return info
+    # Check partial match on PRESETS
+    for pid, p in PRESETS.items():
+        if key in pid or key in p["label"].lower():
+            return {
+                "id": pid,
+                "name": p["label"],
+                "state": "International" if pid in ["london", "paris"] else "India",
+                "center": p["center"],
+                "min_lat": p["bbox"][1],
+                "max_lat": p["bbox"][3],
+                "min_lon": p["bbox"][0],
+                "max_lon": p["bbox"][2],
+                "bbox": p["bbox"],
+                "zoom": p["zoom"],
+            }
+    # Check custom coordinate pattern like "custom_19.07_72.87" or "coord_19.07_72.87"
+    if key.startswith("custom_") or key.startswith("coord_"):
+        parts = key.split("_")
+        if len(parts) >= 3:
+            try:
+                lat = float(parts[1])
+                lon = float(parts[2])
+                d = 0.20
+                return {
+                    "id": key,
+                    "name": f"Regional Site ({lat:.2f}°N, {lon:.2f}°E)",
+                    "state": "Custom Region",
+                    "center": [lat, lon],
+                    "min_lat": round(lat - d, 4),
+                    "max_lat": round(lat + d, 4),
+                    "min_lon": round(lon - d, 4),
+                    "max_lon": round(lon + d, 4),
+                    "bbox": [round(lon - d, 4), round(lat - d, 4), round(lon + d, 4), round(lat + d, 4)],
+                    "zoom": 11,
+                }
+            except Exception:
+                pass
     return INDIAN_CITIES[DEFAULT_CITY]
 
 

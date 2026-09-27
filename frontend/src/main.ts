@@ -593,13 +593,6 @@ async function refreshState(): Promise<void> {
   updateButtons()
 }
 
-function setPresetDefaults(): void {
-  const id = ($('preset') as HTMLSelectElement).value
-  const p = config.presets.find((x) => x.id === id)
-  if (!p) return
-  const bounds = layerBoundsFor(p.bbox)
-  if (layers === null) leftPane.fit(bounds)
-}
 
 function layerBoundsFor(bbox: number[]): LatLngBoundsExpression {
   return L.latLngBounds([
@@ -680,18 +673,30 @@ function renderProbeData(): void {
 
   const ls = layerStyle('prediction')
 
+  // Show/Hide Global Action button if probe is outside active box
+  const globalActionEl = $('probeGlobalAction')
+  if (globalActionEl) {
+    if (p.is_outside_region) {
+      globalActionEl.classList.remove('hidden')
+    } else {
+      globalActionEl.classList.add('hidden')
+    }
+  }
+
   // 1. Exact Downscaled NO2 & Pixel Color
   $('probeCurrent').textContent = currentVal !== null ? `${currentVal} µg/m³` : 'N/A'
-  $('probeStatus').textContent = isHourly
-    ? `Hour ${timeIdx + 1}/${p.t_len} (${timeLabelStr}) · Downscaled 1km Pixel`
-    : `Period Mean across ${p.t_len} hours · Downscaled 1km Pixel`
+  $('probeStatus').textContent = p.is_outside_region
+    ? `Global Point Probe · (${p.query_lat.toFixed(4)}°N, ${p.query_lon.toFixed(4)}°E)`
+    : (isHourly
+        ? `Hour ${timeIdx + 1}/${p.t_len} (${timeLabelStr}) · Downscaled 1km Pixel`
+        : `Period Mean across ${p.t_len} hours · Downscaled 1km Pixel`)
 
   const downscaledColor = currentVal !== null ? getNo2Color(currentVal, ls.vmin, ls.vmax) : null
   const swatchEl = $('probeColorSwatch')
   const colorLabelEl = $('probeColorLabel')
   if (swatchEl && downscaledColor) {
     swatchEl.style.backgroundColor = downscaledColor.rgbStr
-    swatchEl.style.boxShadow = `0 0 10px ${downscaledColor.rgbStr}`
+    swatchEl.style.boxShadow = `0 0 12px ${downscaledColor.rgbStr}`
   }
   if (colorLabelEl && downscaledColor) {
     colorLabelEl.textContent = `${downscaledColor.rgbStr} · ${downscaledColor.category}`
@@ -707,7 +712,7 @@ function renderProbeData(): void {
     const coarseColor = getNo2Color(coarseVal, ls.vmin, ls.vmax)
     if (coarseSwatchEl) {
       coarseSwatchEl.style.backgroundColor = coarseColor.rgbStr
-      coarseSwatchEl.style.boxShadow = `0 0 10px ${coarseColor.rgbStr}`
+      coarseSwatchEl.style.boxShadow = `0 0 12px ${coarseColor.rgbStr}`
     }
     if (coarseLabelEl) {
       coarseLabelEl.textContent = `${coarseColor.rgbStr} · ${coarseColor.category}`
@@ -717,7 +722,7 @@ function renderProbeData(): void {
       const pinEl = probeMarkerLeft.getElement()
       if (pinEl) {
         pinEl.style.backgroundColor = coarseColor.rgbStr
-        pinEl.style.boxShadow = `0 0 12px ${coarseColor.rgbStr}, inset 0 0 3px #000`
+        pinEl.style.boxShadow = `0 0 14px ${coarseColor.rgbStr}, inset 0 0 4px #000`
       }
     }
   }
@@ -733,7 +738,7 @@ function renderProbeData(): void {
       const apiColor = getNo2Color(apiVal, ls.vmin, ls.vmax)
       if (apiSwatchEl) {
         apiSwatchEl.style.backgroundColor = apiColor.rgbStr
-        apiSwatchEl.style.boxShadow = `0 0 10px ${apiColor.rgbStr}`
+        apiSwatchEl.style.boxShadow = `0 0 12px ${apiColor.rgbStr}`
       }
       if (apiLabelEl) {
         apiLabelEl.textContent = `${apiColor.rgbStr} · ${apiColor.category}`
@@ -759,7 +764,7 @@ function renderProbeData(): void {
     const pinEl = probeMarkerRight.getElement()
     if (pinEl) {
       pinEl.style.backgroundColor = downscaledColor.rgbStr
-      pinEl.style.boxShadow = `0 0 12px ${downscaledColor.rgbStr}, inset 0 0 3px #000`
+      pinEl.style.boxShadow = `0 0 14px ${downscaledColor.rgbStr}, inset 0 0 4px #000`
     }
   }
 
@@ -1125,10 +1130,31 @@ async function init(): Promise<void> {
   }
   presetSel.value = config.defaults.preset
 
-  // Load 110+ Indian cities into searchable datalist
+  // Load presets & 110+ Indian cities into unified searchable catalog
   try {
     const cRes = await api.cities()
-    citiesData = cRes.cities || []
+    const indianList = cRes.cities || []
+    const presetItems: import('./types').CityItem[] = config.presets.map((p) => ({
+      id: p.id,
+      name: p.label.replace(/\s*\(.*?\)/, '').trim(),
+      state: p.label.includes('(') ? p.label.replace(/.*\((.*?)\).*/, '$1') : 'Preset',
+      center: [p.center[0], p.center[1]] as [number, number],
+      min_lat: p.bbox[1],
+      max_lat: p.bbox[3],
+      min_lon: p.bbox[0],
+      max_lon: p.bbox[2],
+      bbox: [p.bbox[0], p.bbox[1], p.bbox[2], p.bbox[3]] as [number, number, number, number],
+      zoom: p.zoom,
+    }))
+    const cityMap = new Map<string, import('./types').CityItem>()
+    for (const pi of presetItems) cityMap.set(pi.id.toLowerCase(), pi)
+    for (const ci of indianList) {
+      if (!cityMap.has(ci.id.toLowerCase())) {
+        cityMap.set(ci.id.toLowerCase(), ci)
+      }
+    }
+    citiesData = Array.from(cityMap.values())
+
     const datalist = $('citiesList')
     datalist.innerHTML = ''
     for (const c of citiesData) {
@@ -1209,7 +1235,7 @@ async function init(): Promise<void> {
     if (!query) return
     const rawQ = query.trim().toLowerCase()
     const cleanQ = rawQ.split(',')[0].trim()
-    const matched = citiesData.find((c) => {
+    let matched = citiesData.find((c) => {
       const cName = c.name.toLowerCase()
       const cState = (c.state || '').toLowerCase()
       const cFull = `${cName}, ${cState}`
@@ -1227,11 +1253,48 @@ async function init(): Promise<void> {
       )
     })
     if (!matched) {
-      console.warn('No city match for query:', query)
+      try {
+        const geoResp = await fetch(
+          `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(cleanQ)}&count=1&language=en&format=json`,
+        )
+        if (geoResp.ok) {
+          const geoData = await geoResp.json()
+          if (geoData.results && geoData.results.length > 0) {
+            const top = geoData.results[0]
+            const gLat = top.latitude
+            const gLon = top.longitude
+            const d = 0.20
+            matched = {
+              id: `custom_${top.name.toLowerCase().replace(/[^a-z0-9]/g, '_')}`,
+              name: top.name,
+              state: top.country || 'Global',
+              center: [gLat, gLon],
+              min_lat: Number((gLat - d).toFixed(4)),
+              max_lat: Number((gLat + d).toFixed(4)),
+              min_lon: Number((gLon - d).toFixed(4)),
+              max_lon: Number((gLon + d).toFixed(4)),
+              bbox: [
+                Number((gLon - d).toFixed(4)),
+                Number((gLat - d).toFixed(4)),
+                Number((gLon + d).toFixed(4)),
+                Number((gLat + d).toFixed(4)),
+              ],
+              zoom: 11,
+            }
+            citiesData.push(matched)
+          }
+        }
+      } catch (err) {
+        console.warn('Geocoding search error:', err)
+      }
+    }
+    if (!matched) {
+      status(`Location "${query}" not recognized. Please check query.`, true)
       return
     }
     activeCityId = matched.id
     presetSel.value = matched.id
+    cityInput.value = `${matched.name}, ${matched.state || 'India'}`
     $('predictCityDisplay').textContent = `${matched.name}, ${matched.state || 'India'}`
     const coordEl = $('predictCityCoord')
     if (coordEl) coordEl.textContent = `${matched.center[0].toFixed(4)}°N, ${matched.center[1].toFixed(4)}°E · ${matched.state || 'India'}`
@@ -1264,7 +1327,7 @@ async function init(): Promise<void> {
       renderOverlays()
       updateTimeLabel()
       if (predictivePane) renderPredictiveOverlay()
-      if (currentProbe) void handleProbe(currentProbe.query_lat, currentProbe.query_lon)
+      void handleProbe(matched.center[0], matched.center[1])
       status(`Active Region: ${matched.name} (${matched.state}) · Restored from cache (instant) ✓`)
       return
     }
@@ -1302,6 +1365,7 @@ async function init(): Promise<void> {
                 })
               }
               status(`Downscaled NO₂ density map ready for ${matched.name} - Complete`)
+              void handleProbe(matched.center[0], matched.center[1])
             },
             `downscale ${matched.name}`,
           )
@@ -1502,9 +1566,41 @@ async function init(): Promise<void> {
   })
 
   presetSel.addEventListener('change', () => {
-    setPresetDefaults()
-    updateButtons()
+    const val = presetSel.value
+    if (val) {
+      void handleCitySelect(val)
+    }
   })
+
+  const btnDownscaleProbe = $('btnDownscaleProbeRegion')
+  if (btnDownscaleProbe) {
+    btnDownscaleProbe.addEventListener('click', async () => {
+      if (!currentProbe) return
+      const lat = currentProbe.query_lat
+      const lon = currentProbe.query_lon
+      const customId = `custom_${lat.toFixed(2)}_${lon.toFixed(2)}`
+      const d = 0.20
+      const customCity: import('./types').CityItem = {
+        id: customId,
+        name: `Location (${lat.toFixed(2)}°N, ${lon.toFixed(2)}°E)`,
+        state: 'Probed Domain',
+        center: [lat, lon],
+        min_lat: Number((lat - d).toFixed(4)),
+        max_lat: Number((lat + d).toFixed(4)),
+        min_lon: Number((lon - d).toFixed(4)),
+        max_lon: Number((lon + d).toFixed(4)),
+        bbox: [
+          Number((lon - d).toFixed(4)),
+          Number((lat - d).toFixed(4)),
+          Number((lon + d).toFixed(4)),
+          Number((lat + d).toFixed(4)),
+        ],
+        zoom: 11,
+      }
+      citiesData.push(customCity)
+      await handleCitySelect(customId)
+    })
+  }
   ;($('layerLeft') as HTMLSelectElement).addEventListener('change', renderOverlays)
   ;($('layerRight') as HTMLSelectElement).addEventListener('change', renderOverlays)
   ;($('gridCoarse') as HTMLInputElement).addEventListener('change', drawGridlines)
