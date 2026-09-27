@@ -1013,7 +1013,7 @@ function renderPredictiveOverlay(): void {
     frame = frame.map((row) =>
       row.map((v) => (v !== null ? v * ratio * trafficMult : null))
     )
-    const rs = { vmin: 10, vmax: 45, mode: 'seq' as const }
+    const rs = layerStyle('prediction')
     const opacity = trafficReductionActive ? 0.58 : (stepData?.alert ? 0.90 : 0.75)
     const url = frameToUrl(frame, rs.vmin, rs.vmax, rs.mode)
     predictivePane.setOverlay(url, bounds, opacity)
@@ -1030,10 +1030,8 @@ function renderPredictiveOverlay(): void {
   }
   const lbl = $('legendLabelsPredict')
   if (lbl) {
-    const stepData = currentForecast?.steps[predictStep]
-    const effectiveNo2 = stepData ? (trafficReductionActive ? stepData.no2 * 0.6 : stepData.no2) : 35.0
-    const dynamicMax = Math.max(45.0, Math.round(effectiveNo2 * 1.8 * 10) / 10)
-    lbl.textContent = `${dynamicMax.toFixed(1)} µg/m³`
+    const rs = layerStyle('prediction')
+    lbl.textContent = `${rs.vmin.toFixed(1)} – ${rs.vmax.toFixed(1)} µg/m³`
   }
 }
 
