@@ -117,13 +117,20 @@ whenever a reference exists).
 | `POST /api/fetch` | Download + gap-fill a region/date window (job) |
 | `POST /api/train` | Train model, predict field, validate (job) |
 | `POST /api/apply` | Apply trained model to the loaded dataset (job) |
+| `POST /api/benchmark/models` | Multi-model arena leaderboard across all algorithms (job) |
 | `GET /api/jobs/{id}` | Job progress/stage polling |
 | `GET /api/result/meta`, `GET /api/result/layers` | Metrics/importances; grid layers for the map |
+| `GET /api/point/inspect?lat=&lon=` | Hyperlocal point inspector (AQI, diurnal curve, landmark) |
+| `GET /api/stations/benchmark` | Built-in CPCB CAAQMS stations & landmark pins (Mumbai) |
+| `POST /api/stations/benchmark/validate` | 1-Click evaluate model against Mumbai CPCB ground sensors |
+| `POST /api/validate/stations` | Custom CSV (`lon,lat,no2[,time]`) independent validation |
 | `GET /api/export/netcdf` | NetCDF export of the current result |
-| `POST /api/validate/stations` | CSV (`lon,lat,no2[,time]`) independent validation |
+| `GET /api/export/geojson` | GeoJSON polygon feature collection export |
+| `GET /api/export/csv` | Tabular CSV export of downscaled predictions |
 
 All long operations are jobs: they return `{job_id}` immediately and report
-`progress` + human-readable `stage` (e.g. `road density (OSM 3/4)`).
+`progress` + human-readable `stage` (e.g. `evaluating Random Forest (1/6)`).
+
 
 ## Data sources
 

@@ -5,8 +5,8 @@ import './style.css'
 
 import { api, pollJob } from './api'
 import { frameAt, frameToUrl } from './gridImage'
-import { createPane, syncMaps, type Pane } from './map'
-import type { AppConfig, Job, Layers, Meta, Summary } from './types'
+import { createPane, syncMaps, type MarkerData, type Pane } from './map'
+import type { AppConfig, BenchmarkArenaResponse, Job, Layers, Meta, StationBenchmarkResponse, Summary } from './types'
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T
 
@@ -42,7 +42,7 @@ function setProgress(p: number): void {
 
 async function runJob(
   start: Promise<{ job_id: string }>,
-  done: () => Promise<void>,
+  done: (job: Job) => Promise<void>,
   label: string,
 ): Promise<void> {
   jobRunning = true
@@ -57,7 +57,7 @@ async function runJob(
     if (job.status === 'error') throw new Error(job.error || 'job failed')
     setProgress(1)
     status(`${label} ✓`)
-    await done()
+    await done(job)
   } catch (err) {
     status(err instanceof Error ? err.message : String(err), true)
     setProgress(0)
@@ -72,8 +72,17 @@ function updateButtons(): void {
   $<HTMLButtonElement>('btnFetch').disabled = jobRunning
   $<HTMLButtonElement>('btnTrain').disabled = jobRunning || !summary || !summary.has_reference
   $<HTMLButtonElement>('btnApply').disabled = jobRunning || !summary || !hasModel
+  const btnArena = document.getElementById('btnArena') as HTMLButtonElement | null
+  if (btnArena) {
+    btnArena.disabled = jobRunning || !summary || !summary.has_reference
+  }
+  const btnMumbai = document.getElementById('btnMumbaiStations') as HTMLButtonElement | null
+  if (btnMumbai) {
+    btnMumbai.disabled = jobRunning || !hasModel
+  }
   $('btnFetch').textContent = jobRunning ? '⏳ working…' : '⬇ Fetch coarse data'
 }
+
 
 function fmtDay(d: Date): string {
   return d.toISOString().slice(0, 10)
@@ -86,14 +95,18 @@ function renderDataInfo(): void {
     return
   }
   const src = summary.sources || {}
+  const gapConf = summary.gap_recovery_confidence !== undefined
+    ? ` (confidence <b>${Math.round((summary.gap_recovery_confidence as number) * 100)}%</b> · ${summary.gapfill_method || 'physics-informed'})`
+    : ''
   el.innerHTML = [
     `<b>${summary.preset_label}</b> · ${summary.start_date} → ${summary.end_date}`,
     `grid ${summary.n_lat}×${summary.n_lon} @ ${summary.fine_step}° · ${summary.n_times} hours`,
-    `cloud gap: <b>${Math.round(summary.gap_fraction * 100)}%</b> of coarse pixels repaired`,
+    `cloud gap: <b>${Math.round(summary.gap_fraction * 100)}%</b> repaired${gapConf}`,
     `fine reference: ${summary.has_reference ? 'yes (independent 0.1° product)' : 'none — transfer mode'}`,
     src.roads ? 'features: NO₂ + met + DEM + OSM roads' : 'features: NO₂ + met + DEM (OSM roads unavailable)',
   ].join('<br>')
 }
+
 
 function renderWarnings(): void {
   const el = $('warnings')
@@ -418,6 +431,7 @@ async function loadLayers(): Promise<boolean> {
     renderOverlays()
     updateTimeLabel()
     renderMetrics()
+    void loadBenchmarkStations(false)
     return true
   } catch {
     layers = null
@@ -450,6 +464,7 @@ function setPresetDefaults(): void {
   if (!p) return
   const bounds = layerBoundsFor(p.bbox)
   if (layers === null) leftPane.fit(bounds)
+  void loadBenchmarkStations(false)
 }
 
 function layerBoundsFor(bbox: number[]): LatLngBoundsExpression {
@@ -459,10 +474,295 @@ function layerBoundsFor(bbox: number[]): LatLngBoundsExpression {
   ])
 }
 
+async function inspectPointAt(lat: number, lon: number): Promise<void> {
+  const el = $('inspectorContent')
+  el.innerHTML = `<div class="hint">Querying point (${lat.toFixed(4)}, ${lon.toFixed(4)})…</div>`
+  try {
+    const res = await api.inspectPoint(lat, lon)
+    const cur = res.current
+    const aqi = cur.aqi
+    const lm = res.nearest_landmark
+    const pVal = cur.downscaled_no2 !== null ? `${cur.downscaled_no2} µg/m³` : 'N/A'
+    const bVal = cur.baseline_no2 !== null ? `${cur.baseline_no2} µg/m³` : 'N/A'
+
+    const series = res.diurnal_24h.downscaled.filter((v): v is number => v !== null)
+    let sparklineSvg = ''
+    if (series.length > 1) {
+      const min = Math.min(...series)
+      const max = Math.max(...series)
+      const w = 270
+      const h = 42
+      const pad = 4
+      const pts = series
+        .map((v, i) => {
+          const x = pad + (i / (series.length - 1)) * (w - pad * 2)
+          const y = h - pad - ((v - min) / (max - min || 1)) * (h - pad * 2)
+          return `${x.toFixed(1)},${y.toFixed(1)}`
+        })
+        .join(' ')
+      sparklineSvg = `
+        <div style="font-size:10px; color:var(--dim); margin-top:6px;">24h Diurnal NO₂ Plume Trend:</div>
+        <svg class="sparkline-svg" viewBox="0 0 ${w} ${h}">
+          <polyline fill="none" stroke="#35d0c0" stroke-width="2" points="${pts}" />
+        </svg>
+      `
+    }
+
+    el.innerHTML = `
+      <div class="inspector-header">
+        <span class="inspector-place">📍 ${lm.name}</span>
+        <span class="inspector-coords">${lm.distance_km} km away</span>
+      </div>
+      <div class="inspector-metrics">
+        <div class="metric-box">
+          <div class="label">ML Downscaled</div>
+          <div class="val">${pVal}</div>
+        </div>
+        <div class="metric-box">
+          <div class="label">Coarse Baseline</div>
+          <div class="val" style="color:#94a3b8;">${bVal}</div>
+        </div>
+      </div>
+      <div style="margin-top:6px; display:flex; align-items:center; gap:8px;">
+        <span class="aqi-pill" style="background:${aqi.color};">${aqi.category}</span>
+        <span style="font-size:11px; color:#cbd5e1;">${aqi.description}</span>
+      </div>
+      ${sparklineSvg}
+      <div class="inspector-env">
+        <span>Elevation: <b>${res.static_features.elevation_m}m</b></span> ·
+        <span>Roads: <b>${res.static_features.road_density_km_km2} km/km²</b></span> ·
+        <span>Gap repaired: <b>${cur.cloud_gap_repaired ? 'Yes' : 'Direct observation'}</b></span>
+      </div>
+    `
+  } catch (err) {
+    el.innerHTML = `<div class="info error">Inspection failed: ${err instanceof Error ? err.message : String(err)}</div>`
+  }
+}
+
+async function loadBenchmarkStations(validate = false): Promise<void> {
+  const currentPreset = summary?.preset || ($('preset') as HTMLSelectElement).value || 'mumbai'
+  try {
+    const data = await api.getBenchmarkStations(currentPreset)
+    if (!data.stations.length && !data.landmarks.length) {
+      if (validate) $('stationResult').textContent = 'No built-in stations for this region.'
+      leftPane.clearMarkers()
+      rightPane.clearMarkers()
+      return
+    }
+
+    let validationData: StationBenchmarkResponse | null = null
+    if (validate) {
+      $('stationResult').textContent = 'validating against CPCB CAAQMS stations…'
+      validationData = await api.validateBenchmarkStations(currentPreset)
+      const m = validationData.metrics
+      $('stationResult').innerHTML = `
+        <b>Mumbai CPCB Benchmark:</b> n=${validationData.n_stations} stations<br>
+        RMSE: <b>${m.rmse} µg/m³</b> (vs baseline ${m.baseline_rmse})<br>
+        MAE: <b>${m.mae} µg/m³</b> · Pearson r: <b>${m.pearson}</b><br>
+        Skill: <b>+${(m.skill_vs_baseline * 100).toFixed(1)}%</b> error reduction vs satellite coarse<br>
+        <span class="hint">${validationData.source}</span>
+      `
+    }
+
+    const showStationsChecked = ($('showStations') as HTMLInputElement)?.checked ?? true
+    if (!showStationsChecked) {
+      leftPane.clearMarkers()
+      rightPane.clearMarkers()
+      return
+    }
+
+    const markers: MarkerData[] = []
+    const stationList = validationData ? validationData.stations : data.stations
+    for (const s of stationList) {
+      const isEval = 'downscaled_no2' in s
+      const html = `
+        <div style="font-family:sans-serif; font-size:12px; line-height:1.4;">
+          <b style="font-size:13px; color:#0f172a;">${s.name}</b><br>
+          <span style="color:#64748b;">${s.type}</span><br>
+          <hr style="margin:4px 0; border:none; border-top:1px solid #e2e8f0;" />
+          <b>Observed Ground Truth:</b> ${s.observed_no2 || (s as { baseline_observed_no2?: number }).baseline_observed_no2} µg/m³<br>
+          ${isEval ? `<b>ML Downscaled:</b> ${(s as { downscaled_no2: number }).downscaled_no2} µg/m³<br><b>Coarse Satellite:</b> ${(s as { coarse_satellite_no2: number }).coarse_satellite_no2} µg/m³<br><span style="color:${(s as { downscale_error: number }).downscale_error < 0 ? '#16a34a' : '#ea580c'}; font-weight:bold;">Error: ${(s as { downscale_error: number }).downscale_error} µg/m³ (${(s as { error_reduction_pct: number }).error_reduction_pct}% reduction)</span><br>` : ''}
+          <i style="font-size:11px; color:#475569;">${s.notes}</i>
+        </div>
+      `
+      markers.push({
+        lat: s.lat,
+        lon: s.lon,
+        title: s.name,
+        popupHtml: html,
+        color: '#f59e0b',
+      })
+    }
+
+    for (const lm of data.landmarks) {
+      const html = `
+        <div style="font-family:sans-serif; font-size:12px;">
+          <b style="font-size:13px; color:#0f172a;">⭐ ${lm.name}</b><br>
+          <span style="color:#64748b;">${lm.category}</span><br>
+          <p style="margin:4px 0 0; color:#334155;">${lm.notes}</p>
+        </div>
+      `
+      markers.push({
+        lat: lm.lat,
+        lon: lm.lon,
+        title: lm.name,
+        popupHtml: html,
+        isLandmark: true,
+        color: '#06b6d4',
+      })
+    }
+
+    leftPane.setMarkers(markers)
+    rightPane.setMarkers(markers)
+  } catch (err) {
+    if (validate) {
+      $('stationResult').textContent = err instanceof Error ? err.message : String(err)
+    }
+  }
+}
+
+function renderArenaLeaderboard(res: BenchmarkArenaResponse): void {
+  const box = $('arenaBox')
+  box.classList.remove('hidden')
+  const rows = res.leaderboard
+    .map((item, idx) => {
+      const isWinner = item.model_id === res.winner_id
+      const m = item.metrics
+      if (!m) {
+        return `<tr><td>${idx + 1}</td><td>${item.model_name}</td><td colspan="5" style="color:var(--danger);">Error</td></tr>`
+      }
+      const skill = (m.skill_vs_baseline * 100).toFixed(1)
+      return `
+        <tr class="${isWinner ? 'winner-row' : ''}">
+          <td>${isWinner ? '🏆' : idx + 1}</td>
+          <td><b>${item.model_name}</b></td>
+          <td><b>${m.rmse}</b></td>
+          <td>${m.mae}</td>
+          <td>${m.pearson}</td>
+          <td style="color:${m.skill_vs_baseline >= 0 ? 'var(--accent)' : 'var(--danger)'};">${m.skill_vs_baseline >= 0 ? '+' : ''}${skill}%</td>
+          <td>${item.fit_time_sec}s</td>
+        </tr>
+      `
+    })
+    .join('')
+
+  box.innerHTML = `
+    <div style="display:flex; justify-content:space-between; margin-bottom:6px;">
+      <b>🏆 Model Benchmark Arena Leaderboard</b>
+      <span style="color:var(--accent);">Winner: ${res.winner_name}</span>
+    </div>
+    <div style="font-size:10px; color:var(--dim); margin-bottom:6px;">Holdout: ${res.holdout_description} (n=${res.n_test} unseen samples)</div>
+    <table class="arena-table">
+      <thead>
+        <tr>
+          <th>#</th>
+          <th>Algorithm</th>
+          <th>RMSE</th>
+          <th>MAE</th>
+          <th>r</th>
+          <th>Skill</th>
+          <th>Time</th>
+        </tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>
+  `
+}
+
+async function runModelArena(): Promise<void> {
+  const box = $('arenaBox')
+  box.classList.remove('hidden')
+  box.innerHTML = '<div class="hint">Running multi-model arena across all algorithms…</div>'
+  const splitVal = ($<HTMLSelectElement>('split')).value
+  const conserveVal = $<HTMLInputElement>('conserve').checked
+
+  await runJob(
+    api.benchmarkModels(splitVal, conserveVal),
+    async (job) => {
+      if (job.result) {
+        renderArenaLeaderboard(job.result as BenchmarkArenaResponse)
+      }
+    },
+    'arena',
+  )
+}
+
+let isSwipeMode = false
+let swipePercent = 50
+
+function initSwipeMode(): void {
+  const container = $('mapsContainer')
+  const divider = $('swipeDivider')
+  const btnDual = $('btnDualView')
+  const btnSwipe = $('btnSwipeView')
+  const mapRight = $('mapRight')
+
+  function updateClip(): void {
+    if (!isSwipeMode) {
+      mapRight.style.clipPath = ''
+      return
+    }
+    const rect = container.getBoundingClientRect()
+    const x = (rect.width * swipePercent) / 100
+    divider.style.left = `${x}px`
+    mapRight.style.clipPath = `polygon(${x}px 0, 100% 0, 100% 100%, ${x}px 100%)`
+  }
+
+  btnDual.addEventListener('click', () => {
+    isSwipeMode = false
+    btnDual.classList.add('active')
+    btnSwipe.classList.remove('active')
+    container.classList.remove('swipe-active')
+    divider.classList.add('hidden')
+    updateClip()
+    leftPane.map.invalidateSize()
+    rightPane.map.invalidateSize()
+  })
+
+  btnSwipe.addEventListener('click', () => {
+    isSwipeMode = true
+    btnSwipe.classList.add('active')
+    btnDual.classList.remove('active')
+    container.classList.add('swipe-active')
+    divider.classList.remove('hidden')
+    updateClip()
+    leftPane.map.invalidateSize()
+    rightPane.map.invalidateSize()
+  })
+
+  let isDragging = false
+  divider.addEventListener('mousedown', (e) => {
+    isDragging = true
+    e.preventDefault()
+  })
+  window.addEventListener('mouseup', () => {
+    isDragging = false
+  })
+  window.addEventListener('mousemove', (e) => {
+    if (!isDragging || !isSwipeMode) return
+    const rect = container.getBoundingClientRect()
+    const x = Math.max(10, Math.min(rect.width - 10, e.clientX - rect.left))
+    swipePercent = (x / rect.width) * 100
+    updateClip()
+  })
+  window.addEventListener('resize', () => {
+    if (isSwipeMode) updateClip()
+  })
+}
+
 async function init(): Promise<void> {
   leftPane = createPane($('mapLeft'))
   rightPane = createPane($('mapRight'))
   syncMaps(leftPane.map, rightPane.map)
+
+  leftPane.onClick((lat, lon) => {
+    void inspectPointAt(lat, lon)
+  })
+  rightPane.onClick((lat, lon) => {
+    void inspectPointAt(lat, lon)
+  })
+
+  initSwipeMode()
 
   config = await api.config()
   const presetSel = $<HTMLSelectElement>('preset')
@@ -513,6 +813,7 @@ async function init(): Promise<void> {
       async () => {
         await refreshState()
         renderOverlays()
+        void loadBenchmarkStations(false)
       },
       'fetch',
     )
@@ -542,6 +843,18 @@ async function init(): Promise<void> {
       },
       'apply',
     )
+  })
+
+  $('btnArena').addEventListener('click', () => {
+    void runModelArena()
+  })
+
+  $('btnMumbaiStations').addEventListener('click', () => {
+    void loadBenchmarkStations(true)
+  })
+
+  $('showStations').addEventListener('change', () => {
+    void loadBenchmarkStations(false)
   })
 
   presetSel.addEventListener('change', () => {
@@ -605,3 +918,4 @@ async function init(): Promise<void> {
 init().catch((err: unknown) => {
   status(err instanceof Error ? err.message : String(err), true)
 })
+

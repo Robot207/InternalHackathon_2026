@@ -366,3 +366,113 @@ def _now() -> str:
     import datetime as dt
 
     return dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
+
+
+def run_benchmark_arena(
+    data: dict,
+    split: str,
+    conserve: bool,
+    summary: dict,
+    progress=None,
+) -> dict:
+    """Benchmark all available ML models on the identical holdout split.
+
+    Ranks models by RMSE, MAE, R², Pearson correlation, and skill vs coarse baseline.
+    """
+    import time
+    from .config import MODELS
+
+    if not summary.get("has_reference"):
+        raise ValueError(
+            "Multi-model arena requires a reference dataset (e.g. London or Paris) "
+            "to evaluate accuracy on independent unseen validation data."
+        )
+
+    if progress:
+        progress(0.05, "engineering features for arena")
+    feat = build_features(data)
+    h, w, t_len = feat["H"], feat["W"], feat["t_len"]
+    split_info = make_split(split, h, w, t_len)
+    train_idx, test_idx = _index_masks(feat, split_info)
+    if len(test_idx) < 100 or len(train_idx) < 500:
+        split_info = make_split("temporal", h, w, t_len)
+        train_idx, test_idx = _index_masks(feat, split_info)
+
+    X = feat["X"]
+    y = feat["y"]
+    X_flat = X.reshape(-1, X.shape[-1])
+    y_flat = y.reshape(-1)
+    X_train = X_flat[train_idx]
+    y_train = y_flat[train_idx]
+    c_up = feat["c_up"]
+    truth = np.asarray(data["ref"], dtype=np.float64)
+
+    truth_test = truth.reshape(-1)[test_idx]
+    base_test = c_up.reshape(-1)[test_idx]
+
+    candidate_models = list(MODELS.keys())
+    leaderboard = []
+
+    total_models = len(candidate_models)
+    for idx, m_id in enumerate(candidate_models):
+        if progress:
+            progress(
+                0.1 + 0.8 * (idx / total_models),
+                f"evaluating {MODELS[m_id]} ({idx+1}/{total_models})",
+            )
+        t0 = time.time()
+        try:
+            model = make_model(m_id)
+            model.fit(X_train, y_train)
+            fit_time = round(time.time() - t0, 2)
+
+            pred_res = predict_field(data, model, conserve, None)
+            pred = pred_res["pred"]
+            pred_test = pred.reshape(-1)[test_idx]
+
+            m_metrics = metrics(pred_test, truth_test, base_test)
+            block_err = _consistency_error(pred, data, feat)
+
+            leaderboard.append(
+                {
+                    "model_id": m_id,
+                    "model_name": MODELS[m_id],
+                    "metrics": m_metrics,
+                    "fit_time_sec": fit_time,
+                    "coarse_consistency_mae": round(block_err, 4),
+                }
+            )
+        except Exception as exc:  # noqa: BLE001
+            leaderboard.append(
+                {
+                    "model_id": m_id,
+                    "model_name": MODELS[m_id],
+                    "error": str(exc),
+                    "fit_time_sec": round(time.time() - t0, 2),
+                }
+            )
+
+    valid_entries = [e for e in leaderboard if "metrics" in e]
+    valid_entries.sort(
+        key=lambda x: (
+            -x["metrics"].get("skill_vs_baseline", -999),
+            x["metrics"].get("rmse", 999),
+        )
+    )
+
+    winner = valid_entries[0]["model_id"] if valid_entries else "none"
+
+    if progress:
+        progress(1.0, f"arena complete: optimal model is {MODELS.get(winner, winner)}")
+
+    return {
+        "split": split_info["mode"],
+        "holdout_description": SPLITS[split_info["mode"]],
+        "n_train": int(len(train_idx)),
+        "n_test": int(len(test_idx)),
+        "winner_id": winner,
+        "winner_name": MODELS.get(winner, winner),
+        "leaderboard": valid_entries,
+        "timestamp": _now(),
+    }
+

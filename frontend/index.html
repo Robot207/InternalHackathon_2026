@@ -46,13 +46,24 @@
               <select id="split"></select>
             </label>
             <label class="inline"><input type="checkbox" id="conserve" checked /> keep satellite pixel totals (mass conservation)</label>
-            <button id="btnTrain" class="primary">🧠 Train &amp; downscale</button>
-            <button id="btnApply" class="secondary" title="Re-run the trained model on the currently fetched region without retraining. Switch Region to Delhi + Fetch first to see cross-region transfer.">🚀 Apply trained model (transfer)</button>
+            <div class="btn-row">
+              <button id="btnTrain" class="primary">🧠 Train &amp; downscale</button>
+              <button id="btnApply" class="secondary" title="Re-run the trained model on the currently fetched region without retraining. Switch Region to Delhi/Mumbai + Fetch first to see cross-region transfer.">🚀 Apply model (transfer)</button>
+            </div>
+            <button id="btnArena" class="arena-btn" title="Benchmark all algorithms on the identical holdout split">🏆 Benchmark All Models (Arena Leaderboard)</button>
+            <div id="arenaBox" class="arena-box hidden"></div>
             <div id="warnings" class="warnings"></div>
           </section>
 
+          <section class="panel" id="inspectorPanel">
+            <h3>3 · Hyperlocal Point Inspector</h3>
+            <div id="inspectorContent" class="inspector-card">
+              <div class="hint">Click any cell or neighborhood on the map to inspect local street-scale NO₂, diurnal variation, and AQI advisory.</div>
+            </div>
+          </section>
+
           <section class="panel" id="metricsPanel">
-            <h3>3 · Validation on unseen data</h3>
+            <h3>4 · Validation on unseen data</h3>
             <div id="metrics" class="cards">run training to see metrics</div>
             <div class="row2">
               <div>
@@ -67,11 +78,21 @@
           </section>
 
           <section class="panel">
-            <h3>4 · Independent stations</h3>
-            <p class="hint">Upload CSV with <code>lon,lat,no2</code> columns (optional <code>time</code>) to validate against unseen station data.</p>
+            <h3>5 · Ground Stations (Unseen Validation)</h3>
+            <button id="btnMumbaiStations" class="primary full-width" title="1-Click evaluate against verified CPCB CAAQMS monitoring stations in Mumbai (BKC, Bandra, Sion, Kurla, Vile Parle, Worli, etc.)">📍 Validate Mumbai CPCB Stations</button>
+            <label class="inline" style="margin-top: 8px;"><input type="checkbox" id="showStations" checked /> Show CPCB Stations &amp; Landmarks on map</label>
+            <hr class="divider" />
+            <p class="hint">Or upload custom CSV with <code>lon,lat,no2</code> columns (optional <code>time</code>):</p>
             <input type="file" id="csvFile" accept=".csv" />
             <div id="stationResult" class="info"></div>
-            <a id="exportNc" class="export" href="/api/export/netcdf" download>⬇ Download NetCDF export</a>
+            <div class="export-group">
+              <span class="export-label">Export Datasets:</span>
+              <div class="export-buttons">
+                <a id="exportNc" class="export" href="/api/export/netcdf" download>⬇ NetCDF</a>
+                <a id="exportGeoJson" class="export" href="/api/export/geojson" download>⬇ GeoJSON</a>
+                <a id="exportCsv" class="export" href="/api/export/csv" download>⬇ CSV</a>
+              </div>
+            </div>
           </section>
         </aside>
 
@@ -95,15 +116,23 @@
                 <option value="reference">Fine reference (0.1°)</option>
               </select>
             </div>
+            <div class="pane-ctrl mode-ctrl">
+              <span class="pane-dot mode"></span> view
+              <button id="btnDualView" class="chip active">Dual Synced</button>
+              <button id="btnSwipeView" class="chip">Split Swipe</button>
+            </div>
             <div class="pane-ctrl grid-ctrl" title="Draw cell boundaries on both maps">
               <span class="pane-dot grid"></span> gridlines
-              <label><input type="checkbox" id="gridCoarse" checked /> 0.25° pixel edges</label>
-              <label><input type="checkbox" id="gridFine" checked /> 0.05° fine grid (right)</label>
+              <label><input type="checkbox" id="gridCoarse" checked /> 0.25°</label>
+              <label><input type="checkbox" id="gridFine" checked /> 0.05°</label>
             </div>
           </div>
-          <div class="maps">
+          <div id="mapsContainer" class="maps">
             <div id="mapLeft" class="map"></div>
             <div id="mapRight" class="map"></div>
+            <div id="swipeDivider" class="swipe-divider hidden">
+              <div class="swipe-handle">⇹</div>
+            </div>
           </div>
           <div class="timeline">
             <button id="btnPlay" title="play">▶</button>

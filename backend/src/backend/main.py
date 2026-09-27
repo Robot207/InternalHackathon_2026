@@ -11,7 +11,8 @@ from . import artifacts, jobs
 from .config import ARTIFACT_DIR, BASE_DIR, MODELS, PRESETS, SPLITS
 from .dataset import build_dataset, dataset_paths, load_dataset
 from .schemas import ApplyRequest, FetchRequest, TrainRequest
-from .training import run_apply, run_training
+from .stations import evaluate_built_in_stations, get_stations_and_landmarks
+from .training import run_apply, run_benchmark_arena, run_training
 from .validation import validate_station_csv
 
 app = FastAPI(title="NO2 Satellite Downscaling API", version="0.1.0")
@@ -193,6 +194,78 @@ async def validate_stations(file: UploadFile = File(...)) -> dict:
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     return result
+
+
+@app.get("/api/stations/benchmark")
+def get_benchmark_stations(preset: str = "mumbai") -> dict:
+    return get_stations_and_landmarks(preset)
+
+
+@app.post("/api/stations/benchmark/validate")
+def validate_benchmark_stations(preset: str = "mumbai") -> dict:
+    try:
+        return evaluate_built_in_stations(preset)
+    except Exception as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.post("/api/benchmark/models")
+def benchmark_models(split: str = "spatiotemporal", conserve: bool = True) -> dict:
+    summary = STATE.get("summary")
+    if not summary:
+        raise HTTPException(400, "fetch a dataset before running model benchmark")
+    if not summary.get("has_reference"):
+        raise HTTPException(
+            400,
+            "Multi-model arena requires a reference preset (London/Paris) to evaluate unseen validation accuracy.",
+        )
+    key = summary["key"]
+
+    def job(progress) -> dict:
+        data = load_dataset(key)
+        arena_res = run_benchmark_arena(data, split, conserve, summary, progress)
+        return arena_res
+
+    job_id = jobs.submit("arena", job)
+    return {"job_id": job_id}
+
+
+@app.get("/api/point/inspect")
+def inspect_point_endpoint(lat: float, lon: float) -> dict:
+    summary = STATE.get("summary")
+    if not summary or not artifacts.has_predictions():
+        raise HTTPException(404, "No downscaling prediction available to inspect.")
+    try:
+        return artifacts.inspect_point(lat, lon, summary)
+    except Exception as exc:
+        raise HTTPException(400, f"Point inspection error: {exc}") from exc
+
+
+@app.get("/api/export/geojson")
+def export_geojson_endpoint() -> FileResponse:
+    summary = STATE.get("summary")
+    if not artifacts.has_predictions() or summary is None:
+        raise HTTPException(404, "no prediction layers yet")
+    path = artifacts.export_geojson(summary)
+    return FileResponse(
+        path,
+        media_type="application/geo+json",
+        filename=f"no2_downscaled_{summary.get('preset', 'mumbai')}.geojson",
+    )
+
+
+@app.get("/api/export/csv")
+def export_csv_endpoint() -> FileResponse:
+    summary = STATE.get("summary")
+    if not artifacts.has_predictions() or summary is None:
+        raise HTTPException(404, "no prediction layers yet")
+    path = artifacts.export_csv(summary)
+    return FileResponse(
+        path,
+        media_type="text/csv",
+        filename=f"no2_downscaled_{summary.get('preset', 'mumbai')}.csv",
+    )
+
 
 
 @app.exception_handler(Exception)

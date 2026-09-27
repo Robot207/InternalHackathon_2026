@@ -39,7 +39,26 @@ export const api = {
     form.append('file', file)
     return request<StationResult>('/api/validate/stations', { method: 'POST', body: form })
   },
+  getBenchmarkStations: (preset = 'mumbai') =>
+    request<{ preset: string; region: string; stations: import('./types').StationBenchmarkItem[]; landmarks: import('./types').LandmarkItem[] }>(
+      `/api/stations/benchmark?preset=${encodeURIComponent(preset)}`,
+    ),
+  validateBenchmarkStations: (preset = 'mumbai') =>
+    post<import('./types').StationBenchmarkResponse>(
+      `/api/stations/benchmark/validate?preset=${encodeURIComponent(preset)}`,
+      {},
+    ),
+  benchmarkModels: (split = 'spatiotemporal', conserve = true) =>
+    post<{ job_id: string }>(
+      `/api/benchmark/models?split=${encodeURIComponent(split)}&conserve=${conserve}`,
+      {},
+    ),
+  inspectPoint: (lat: number, lon: number) =>
+    request<import('./types').PointInspectResult>(
+      `/api/point/inspect?lat=${lat.toFixed(5)}&lon=${lon.toFixed(5)}`,
+    ),
 }
+
 
 export async function pollJob(id: string, onTick: (job: Job) => void): Promise<Job> {
   for (;;) {

@@ -116,14 +116,16 @@ def build_dataset(
     precip = wx[..., 5]
     blh = wx[..., 6]
 
-    report(0.8, "building coarse grid")
+    report(0.8, "building coarse grid & physics-informed gap repair")
     coarse_blocks = block_mean(coarse_fine, grid)
     cloud_blocks = block_mean(cloud, grid)
+    blh_blocks = block_mean(blh, grid)
+    spd_blocks = block_mean(spd, grid)
     gap = np.where(
         np.isfinite(cloud_blocks), cloud_blocks > cloud_threshold, False
     ).astype(bool)
     observed = np.where(gap, np.nan, coarse_blocks)
-    filled = gapfill(observed)
+    filled, gap_confidence = gapfill_meteo(observed, blh_blocks, spd_blocks, times)
 
     if ref is not None:
         bad = int(np.sum(~np.isfinite(ref)))
@@ -142,6 +144,7 @@ def build_dataset(
         block_idx=grid["block_idx"],
         coarse=coarse_blocks.astype(np.float32),
         coarse_filled=filled.astype(np.float32),
+        gap_confidence=gap_confidence.astype(np.float32),
         cloud_gap=gap,
         cloud_blocks=cloud_blocks.astype(np.float32),
         ref=(ref.astype(np.float32) if ref is not None else np.full((1, 1, 1), np.nan, np.float32)),
@@ -181,6 +184,8 @@ def build_dataset(
         "clons": [round(float(x), 5) for x in grid["clons"]],
         "has_reference": bool(ref is not None),
         "gap_fraction": round(float(np.mean(gap)), 4),
+        "gap_recovery_confidence": round(float(np.mean(gap_confidence)), 3),
+        "gapfill_method": "physics-informed meteorological + spatiotemporal",
         "road_density_available": roads_ok,
         "sources": {
             "coarse_no2": "Open-Meteo CAMS global (~0.1 deg native, aggregated to 0.25 deg)",
@@ -208,18 +213,74 @@ def load_dataset(key: str) -> dict:
     return out
 
 
-def gapfill(observed: np.ndarray) -> np.ndarray:
+def gapfill_meteo(
+    observed: np.ndarray,
+    blh_blocks: np.ndarray | None = None,
+    spd_blocks: np.ndarray | None = None,
+    times: list[str] | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Physics-informed meteorological gap filling for satellite NO2 observations.
+
+    Handles gaps under cloudy conditions using temporal interpolation modulated by
+    boundary-layer height (trapping), wind speed (dispersion), and diurnal emission
+    patterns, followed by spatial multi-directional neighbor diffusion.
+    """
     t_len, hc, wc = observed.shape
     arr = observed.astype(np.float64).copy()
+    confidence = np.ones((t_len, hc, wc), dtype=np.float32)
+
+    hours = np.zeros(t_len, dtype=float)
+    if times and len(times) == t_len:
+        for ti, t_str in enumerate(times):
+            try:
+                part = t_str.split("T")[-1].split(":")[0]
+                hours[ti] = float(part)
+            except Exception:
+                hours[ti] = float(ti % 24)
+    else:
+        hours = np.arange(t_len) % 24
+
+    # Diurnal vehicular & industrial emission curves (morning rush 8-10, evening 18-21)
+    diurnal_profile = (
+        1.0
+        + 0.35 * np.exp(-0.5 * ((hours - 9.0) / 2.0) ** 2)
+        + 0.45 * np.exp(-0.5 * ((hours - 19.0) / 2.5) ** 2)
+    )
+
     for i in range(hc):
         for j in range(wc):
             col = arr[:, i, j]
             ok = np.isfinite(col)
-            if ok.all() or not ok.any():
+            if ok.all():
                 continue
+            if not ok.any():
+                confidence[:, i, j] = 0.40
+                continue
+
             idx = np.arange(t_len)
-            col[~ok] = np.interp(idx[~ok], idx[ok], col[ok])
-            arr[:, i, j] = col
+            interpolated = np.interp(idx, idx[ok], col[ok])
+
+            # For cloud gaps, modulate by atmospheric ventilation index V = BLH * WindSpeed
+            if blh_blocks is not None and spd_blocks is not None:
+                blh_col = np.maximum(blh_blocks[:, i, j], 50.0)
+                spd_col = np.maximum(spd_blocks[:, i, j], 0.5)
+                dispersion_idx = 1.0 / np.sqrt(blh_col * spd_col)
+                norm_disp = dispersion_idx / max(float(np.mean(dispersion_idx)), 1e-6)
+                gap_mask = ~ok
+                mod_factor = 0.5 * norm_disp[gap_mask] + 0.5 * (
+                    diurnal_profile[gap_mask] / max(float(np.mean(diurnal_profile)), 1e-6)
+                )
+                mod_factor = np.clip(mod_factor, 0.55, 1.80)
+                interpolated[gap_mask] = interpolated[gap_mask] * mod_factor
+
+            for ti in range(t_len):
+                if not ok[ti]:
+                    min_dist = int(np.min(np.abs(idx[ok] - ti)))
+                    confidence[ti, i, j] = float(max(0.45, 0.95 - 0.04 * min_dist))
+
+            arr[:, i, j] = interpolated
+
+    # Spatial neighbor diffusion for any remaining voids
     still = ~np.isfinite(arr)
     if still.any():
         filled = arr.copy()
@@ -238,11 +299,20 @@ def gapfill(observed: np.ndarray) -> np.ndarray:
                 mean = np.where(cnt > 0, acc / np.maximum(cnt, 1e-9), np.nan)
             new_vals = np.where(still & np.isfinite(mean), mean, np.nan)
             filled = np.where(np.isfinite(new_vals), new_vals, filled)
+            confidence[still & np.isfinite(new_vals)] = 0.55
             still = ~np.isfinite(filled)
         global_mean = np.nanmean(arr) if np.isfinite(arr).any() else 0.0
-        filled = np.where(np.isfinite(filled), filled, global_mean if np.isfinite(global_mean) else 0.0)
+        filled = np.where(
+            np.isfinite(filled), filled, global_mean if np.isfinite(global_mean) else 0.0
+        )
+        confidence[~np.isfinite(arr)] = 0.30
         arr = filled
-    return arr
+
+    return arr, confidence
+
+
+def gapfill(observed: np.ndarray) -> np.ndarray:
+    return gapfill_meteo(observed)[0]
 
 
 def _shift(acc: np.ndarray, cnt: np.ndarray, di: int, dj: int):
@@ -255,3 +325,4 @@ def _shift(acc: np.ndarray, cnt: np.ndarray, di: int, dj: int):
     out_a[dst_r, dst_c] = acc[src_r, src_c]
     out_c[dst_r, dst_c] = cnt[src_r, src_c]
     return out_a, out_c
+

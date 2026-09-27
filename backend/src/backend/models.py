@@ -51,6 +51,24 @@ def make_model(name: str):
                 random_state=42,
             ),
         )
+    if name == "ensemble":
+        from sklearn.ensemble import RandomForestRegressor, VotingRegressor
+        from xgboost import XGBRegressor
+
+        rf = RandomForestRegressor(
+            n_estimators=250, min_samples_leaf=3, n_jobs=-1, random_state=42
+        )
+        xgb = XGBRegressor(
+            n_estimators=300,
+            learning_rate=0.08,
+            max_depth=6,
+            subsample=0.9,
+            colsample_bytree=0.9,
+            random_state=42,
+            n_jobs=-1,
+            verbosity=0,
+        )
+        return VotingRegressor(estimators=[("rf", rf), ("xgb", xgb)], weights=[0.45, 0.55])
     raise ValueError(f"unknown model: {name}. available: {list(MODELS)}")
 
 
@@ -59,7 +77,17 @@ def feature_importance(model, names: list[str]) -> list[dict]:
     if hasattr(model, "named_steps"):
         est = list(model.named_steps.values())[-1]
     importances = None
-    if hasattr(est, "feature_importances_"):
+    if hasattr(est, "estimators_"):
+        # For VotingRegressor / Ensemble: average normalized importances across sub-estimators
+        sub_imps = []
+        for sub_est in est.estimators_:
+            sub_res = feature_importance(sub_est, names)
+            if sub_res:
+                sub_dict = {x["feature"]: x["importance"] for x in sub_res}
+                sub_imps.append([sub_dict.get(n, 0.0) for n in names])
+        if sub_imps:
+            importances = np.mean(sub_imps, axis=0)
+    elif hasattr(est, "feature_importances_"):
         importances = np.asarray(est.feature_importances_, dtype=float)
     elif hasattr(est, "coefs_"):
         importances = np.mean(np.abs(np.asarray(est.coefs_[0], dtype=float)), axis=0)
@@ -73,3 +101,4 @@ def feature_importance(model, names: list[str]) -> list[dict]:
         {"feature": names[i], "importance": round(float(importances[i] / total), 4)}
         for i in order
     ]
+

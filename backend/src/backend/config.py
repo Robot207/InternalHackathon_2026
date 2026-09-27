@@ -118,6 +118,14 @@ PRESETS: dict[str, dict] = {
         "fine_reference": False,
         "notes": "Outside CAMS European domain: transfer inference only",
     },
+    "mumbai_suburbs": {
+        "label": "Mumbai Suburbs (Bandra / Khar / BKC)",
+        "bbox": [72.78, 18.98, 72.92, 19.12],
+        "center": [19.06, 72.84],
+        "zoom": 12,
+        "fine_reference": False,
+        "notes": "Hyperlocal focus: TSEC Bandra West, Khar West, Santacruz, BKC",
+    },
 }
 
 MODELS = {
@@ -126,6 +134,7 @@ MODELS = {
     "hist_gradient_boosting": "HistGradientBoosting",
     "xgboost": "XGBoost",
     "mlp": "MLP Neural Net",
+    "ensemble": "Ensemble (RF + XGBoost)",
 }
 
 SPLITS = {
@@ -133,3 +142,14 @@ SPLITS = {
     "temporal": "Unseen time window",
     "spatiotemporal": "Unseen blocks + time",
 }
+
+# CPCB (Central Pollution Control Board, India) NAAQS NO2 (µg/m³) Health Thresholds
+AQI_NO2_BREAKPOINTS = [
+    (0.0, 40.0, "Good", "#00e400", "Air quality is considered satisfactory, and air pollution poses little or no risk."),
+    (40.1, 80.0, "Satisfactory", "#92d050", "Minor breathing discomfort to sensitive people."),
+    (80.1, 180.0, "Moderate", "#ffff00", "Breathing discomfort to the people with lungs, asthma and heart diseases."),
+    (180.1, 280.0, "Poor", "#ff7e00", "Breathing discomfort to most people on prolonged exposure."),
+    (280.1, 400.0, "Very Poor", "#ff0000", "Respiratory illness on prolonged exposure."),
+    (400.1, 9999.0, "Severe", "#7e0023", "Affects healthy people and seriously impacts those with existing diseases."),
+]
+

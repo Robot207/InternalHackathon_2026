@@ -121,3 +121,87 @@ export interface StationResult {
   metrics: Metrics
   note: string
 }
+
+export interface StationBenchmarkItem {
+  id: string
+  name: string
+  lat: number
+  lon: number
+  type: string
+  observed_no2: number
+  downscaled_no2: number
+  coarse_satellite_no2: number
+  downscale_error: number
+  coarse_error: number
+  error_reduction_pct: number
+  notes: string
+}
+
+export interface LandmarkItem {
+  id: string
+  name: string
+  lat: number
+  lon: number
+  category: string
+  notes: string
+}
+
+export interface StationBenchmarkResponse {
+  preset: string
+  region_label: string
+  n_stations: number
+  metrics: Metrics
+  stations: StationBenchmarkItem[]
+  source: string
+  summary_text: string
+}
+
+export interface BenchmarkLeaderboardItem {
+  model_id: string
+  model_name: string
+  metrics?: Metrics
+  fit_time_sec: number
+  coarse_consistency_mae?: number
+  error?: string
+}
+
+export interface BenchmarkArenaResponse {
+  split: string
+  holdout_description: string
+  n_train: number
+  n_test: number
+  winner_id: string
+  winner_name: string
+  leaderboard: BenchmarkLeaderboardItem[]
+  timestamp: string
+}
+
+export interface PointInspectResult {
+  query: { lat: number; lon: number }
+  cell: { lat: number; lon: number; r: number; c: number }
+  nearest_landmark: {
+    name: string
+    distance_km: number
+    type: string
+  }
+  current: {
+    downscaled_no2: number | null
+    baseline_no2: number | null
+    cloud_gap_repaired: boolean
+    aqi: {
+      category: string
+      color: string
+      description: string
+    }
+  }
+  static_features: {
+    elevation_m: number
+    road_density_km_km2: number
+  }
+  diurnal_24h: {
+    times: string[]
+    downscaled: (number | null)[]
+    baseline: (number | null)[]
+  }
+}
+
