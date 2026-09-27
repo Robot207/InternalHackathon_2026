@@ -41,3 +41,52 @@ export function sequential(t: number): RGB {
 export function diverging(t: number): RGB {
   return interpolate(COOLWARM, t)
 }
+
+export function rgbToHex(rgb: RGB): string {
+  return '#' + rgb.map((x) => Math.max(0, Math.min(255, x)).toString(16).padStart(2, '0')).join('')
+}
+
+export interface PixelColorInfo {
+  rgb: RGB
+  rgbStr: string
+  hex: string
+  category: string
+  desc: string
+  t: number
+}
+
+export function getNo2Color(val: number, vmin: number, vmax: number): PixelColorInfo {
+  const span = Math.max(0.001, vmax - vmin)
+  const t = Math.max(0, Math.min(1, (val - vmin) / span))
+  const rgb = sequential(t)
+  const rgbStr = `rgb(${rgb[0]}, ${rgb[1]}, ${rgb[2]})`
+  const hex = rgbToHex(rgb)
+
+  let category = 'Good'
+  let desc = 'Clean Air'
+  if (val < 15) {
+    category = 'Pristine Clean'
+    desc = 'Deep Blue background'
+  } else if (val < 25) {
+    category = 'Good'
+    desc = 'Cyan / Green (WHO Target)'
+  } else if (val < 35) {
+    category = 'Moderate'
+    desc = 'Emerald / Lime Green'
+  } else if (val < 50) {
+    category = 'Elevated'
+    desc = 'Yellow / Amber'
+  } else if (val < 75) {
+    category = 'Unhealthy'
+    desc = 'Vivid Orange'
+  } else if (val < 100) {
+    category = 'Severe'
+    desc = 'Crimson Red'
+  } else {
+    category = 'Hazardous'
+    desc = 'Deep Purple'
+  }
+
+  return { rgb, rgbStr, hex, category, desc, t }
+}
+

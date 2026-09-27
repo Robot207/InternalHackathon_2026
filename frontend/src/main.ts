@@ -4,6 +4,7 @@ import type { LayerGroup, LatLngBoundsExpression, Polyline } from 'leaflet'
 import './style.css'
 
 import { api, pollJob } from './api'
+import { getNo2Color } from './colormap'
 import { frameAt, frameToUrl } from './gridImage'
 import { createPane, syncMaps, type Pane } from './map'
 import type { AppConfig, Job, Layers, Meta, ProbeResponse, Summary } from './types'
@@ -370,11 +371,12 @@ function renderOverlays(): void {
   leftPane.setOverlay(frameToUrl(frameAt(layers.layers[leftName], timeIdx), ls.vmin, ls.vmax, ls.mode), bounds, leftName === 'cloud_gap' ? 0.85 : 0.75)
   const rs = layerStyle(rightName)
   rightPane.setOverlay(frameToUrl(frameAt(layers.layers[rightName], timeIdx), rs.vmin, rs.vmax, rs.mode), bounds, rightName === 'residual' ? 0.8 : 0.75)
-  drawLegend(rs)
+  const currentProbeVal = currentProbe ? (timeIdx < currentProbe.t_len ? currentProbe.series[timeIdx] : currentProbe.mean) : null
+  drawLegend(rs, currentProbeVal)
   updateLegendLabels(rs)
 }
 
-function drawLegend(style: { vmin: number; vmax: number; mode: 'seq' | 'div' }): void {
+function drawLegend(style: { vmin: number; vmax: number; mode: 'seq' | 'div' }, selectedVal?: number | null): void {
   const canvas = $<HTMLCanvasElement>('legendCanvas')
   const ctx = canvas.getContext('2d')
   if (!ctx) return
@@ -386,6 +388,16 @@ function drawLegend(style: { vmin: number; vmax: number; mode: 'seq' | 'div' }):
         ? `rgb(${divColor(t)})`
         : `rgb(${seqColor(t)})`
     ctx.fillRect(x, 0, 1, canvas.height)
+  }
+  if (selectedVal !== undefined && selectedVal !== null && isFinite(selectedVal)) {
+    const span = Math.max(0.001, style.vmax - style.vmin)
+    const t = Math.max(0, Math.min(1, (selectedVal - style.vmin) / span))
+    const needleX = Math.round(t * (canvas.width - 1))
+    ctx.fillStyle = '#ffffff'
+    ctx.fillRect(needleX - 1, 0, 3, canvas.height)
+    ctx.strokeStyle = '#000000'
+    ctx.lineWidth = 1
+    ctx.strokeRect(needleX - 1, 0, 3, canvas.height)
   }
 }
 
@@ -656,21 +668,77 @@ function renderProbeData(): void {
       ? p.series[timeIdx]
       : (p.exact_no2_model ?? p.mean)
 
+  const coarseVal =
+    isHourly && p.baseline_series && timeIdx < p.baseline_series.length && p.baseline_series[timeIdx] !== null && p.baseline_series[timeIdx] !== undefined
+      ? p.baseline_series[timeIdx]
+      : (p.baseline_series && p.baseline_series[0] !== null ? p.baseline_series[0] : null)
+
+  const apiVal =
+    isHourly && p.api_series && timeIdx < p.api_series.length && p.api_series[timeIdx] !== null && p.api_series[timeIdx] !== undefined
+      ? p.api_series[timeIdx]
+      : (isHourly ? (p.exact_no2_api ?? p.api_mean) : (p.api_mean ?? p.exact_no2_api))
+
+  const ls = layerStyle('prediction')
+
+  // 1. Exact Downscaled NO2 & Pixel Color
   $('probeCurrent').textContent = currentVal !== null ? `${currentVal} µg/m³` : 'N/A'
   $('probeStatus').textContent = isHourly
     ? `Hour ${timeIdx + 1}/${p.t_len} (${timeLabelStr}) · Downscaled 1km Pixel`
     : `Period Mean across ${p.t_len} hours · Downscaled 1km Pixel`
 
+  const downscaledColor = currentVal !== null ? getNo2Color(currentVal, ls.vmin, ls.vmax) : null
+  const swatchEl = $('probeColorSwatch')
+  const colorLabelEl = $('probeColorLabel')
+  if (swatchEl && downscaledColor) {
+    swatchEl.style.backgroundColor = downscaledColor.rgbStr
+    swatchEl.style.boxShadow = `0 0 10px ${downscaledColor.rgbStr}`
+  }
+  if (colorLabelEl && downscaledColor) {
+    colorLabelEl.textContent = `${downscaledColor.rgbStr} · ${downscaledColor.category}`
+    colorLabelEl.style.color = downscaledColor.rgbStr
+  }
+
+  // 2. Coarse Satellite NO2 & Pixel Color
+  const coarseEl = $('probeCoarseVal')
+  const coarseSwatchEl = $('probeCoarseColorSwatch')
+  const coarseLabelEl = $('probeCoarseColorLabel')
+  if (coarseEl) coarseEl.textContent = coarseVal !== null ? `${coarseVal} µg/m³` : 'N/A'
+  if (coarseVal !== null) {
+    const coarseColor = getNo2Color(coarseVal, ls.vmin, ls.vmax)
+    if (coarseSwatchEl) {
+      coarseSwatchEl.style.backgroundColor = coarseColor.rgbStr
+      coarseSwatchEl.style.boxShadow = `0 0 10px ${coarseColor.rgbStr}`
+    }
+    if (coarseLabelEl) {
+      coarseLabelEl.textContent = `${coarseColor.rgbStr} · ${coarseColor.category}`
+      coarseLabelEl.style.color = coarseColor.rgbStr
+    }
+    if (probeMarkerLeft) {
+      const pinEl = probeMarkerLeft.getElement()
+      if (pinEl) {
+        pinEl.style.backgroundColor = coarseColor.rgbStr
+        pinEl.style.boxShadow = `0 0 12px ${coarseColor.rgbStr}, inset 0 0 3px #000`
+      }
+    }
+  }
+
+  // 3. Live API NO2 & Pixel Color
   const apiEl = $('probeApiNo2')
   const apiAgrEl = $('probeApiAgreement')
+  const apiSwatchEl = $('probeApiColorSwatch')
+  const apiLabelEl = $('probeApiColorLabel')
   if (apiEl) {
-    const apiVal =
-      isHourly && p.api_series && timeIdx < p.api_series.length && p.api_series[timeIdx] !== null && p.api_series[timeIdx] !== undefined
-        ? p.api_series[timeIdx]
-        : (isHourly ? (p.exact_no2_api ?? p.api_mean) : (p.api_mean ?? p.exact_no2_api))
-
     if (apiVal !== null && apiVal !== undefined) {
       apiEl.textContent = `${apiVal} µg/m³`
+      const apiColor = getNo2Color(apiVal, ls.vmin, ls.vmax)
+      if (apiSwatchEl) {
+        apiSwatchEl.style.backgroundColor = apiColor.rgbStr
+        apiSwatchEl.style.boxShadow = `0 0 10px ${apiColor.rgbStr}`
+      }
+      if (apiLabelEl) {
+        apiLabelEl.textContent = `${apiColor.rgbStr} · ${apiColor.category}`
+        apiLabelEl.style.color = apiColor.rgbStr
+      }
       if (apiAgrEl) {
         if (currentVal !== null && apiVal > 0) {
           const errRatio = Math.abs(currentVal - apiVal) / Math.max(apiVal, 12.0)
@@ -686,12 +754,19 @@ function renderProbeData(): void {
     }
   }
 
-  const meanStr =
-    p.api_mean !== null && p.api_mean !== undefined
-      ? `Model: ${p.mean} µg/m³ · API: ${p.api_mean} µg/m³`
-      : `${p.mean} µg/m³`
-  $('probeMean').textContent = meanStr
-  $('probeRange').textContent = `min: ${p.min} · max: ${p.max} µg/m³`
+  // Update Right Marker (Downscaled Pixel Color)
+  if (probeMarkerRight && downscaledColor) {
+    const pinEl = probeMarkerRight.getElement()
+    if (pinEl) {
+      pinEl.style.backgroundColor = downscaledColor.rgbStr
+      pinEl.style.boxShadow = `0 0 12px ${downscaledColor.rgbStr}, inset 0 0 3px #000`
+    }
+  }
+
+  // Draw Legend with active needle
+  drawLegend(ls, currentVal)
+
+  $('probeRange').textContent = `range: ${p.min} – ${p.max} µg/m³ (mean: ${p.mean})`
 
   if (p.nearest_station) {
     $('probeStation').textContent = p.nearest_station.name
@@ -1470,6 +1545,47 @@ async function init(): Promise<void> {
   rightPane.map.on('click', (e) => {
     void handleProbe(e.latlng.lat, e.latlng.lng)
   })
+
+  // Real-time hover pixel color inspection
+  const updateInspectHover = (lat: number, lon: number, isCoarse: boolean) => {
+    if (!layers) return
+    const lats = layers.lats
+    const lons = layers.lons
+    if (!lats.length || !lons.length) return
+    const latMin = lats[0]
+    const latMax = lats[lats.length - 1]
+    const lonMin = lons[0]
+    const lonMax = lons[lons.length - 1]
+    const minLa = Math.min(latMin, latMax)
+    const maxLa = Math.max(latMin, latMax)
+    const minLo = Math.min(lonMin, lonMax)
+    const maxLo = Math.max(lonMin, lonMax)
+    if (lat < minLa || lat > maxLa || lon < minLo || lon > maxLo) return
+
+    const dlat = (latMax - latMin) / Math.max(1, lats.length - 1)
+    const dlon = (lonMax - lonMin) / Math.max(1, lons.length - 1)
+    const r = Math.max(0, Math.min(lats.length - 1, Math.round((lat - latMin) / (dlat || 1))))
+    const c = Math.max(0, Math.min(lons.length - 1, Math.round((lon - lonMin) / (dlon || 1))))
+
+    const layerName = isCoarse ? ($('layerLeft') as HTMLSelectElement).value : ($('layerRight') as HTMLSelectElement).value
+    const frame = frameAt(layers.layers[layerName], timeIdx)
+    const val = frame && frame[r] && frame[r][c] !== null && isFinite(frame[r][c]!) ? frame[r][c]! : null
+    const valEl = $('inspectVal')
+    const swatchEl = $('inspectSwatch')
+    if (val !== null) {
+      const ls = layerStyle(layerName)
+      const color = getNo2Color(val, ls.vmin, ls.vmax)
+      if (valEl) valEl.textContent = `${val.toFixed(1)} µg/m³ · ${color.category}`
+      if (swatchEl) {
+        swatchEl.style.backgroundColor = color.rgbStr
+        swatchEl.style.boxShadow = `0 0 8px ${color.rgbStr}`
+      }
+    }
+  }
+
+  leftPane.map.on('mousemove', (e) => updateInspectHover(e.latlng.lat, e.latlng.lng, true))
+  rightPane.map.on('mousemove', (e) => updateInspectHover(e.latlng.lat, e.latlng.lng, false))
+
   $('btnProbeClose').addEventListener('click', closeProbe)
 }
 

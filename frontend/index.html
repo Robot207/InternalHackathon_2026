@@ -177,6 +177,10 @@
                 <label><input type="checkbox" id="gridCoarse" checked /> 0.25° pixel edges</label>
                 <label><input type="checkbox" id="gridFine" checked /> 0.01° fine grid (right)</label>
               </div>
+              <div id="livePixelInspector" class="pane-ctrl pixel-inspect-ctrl" title="Hover over map to inspect pixel color" style="flex: 0 0 auto; display: flex; align-items: center; gap: 6px; font-family: Consolas, monospace; font-size: 11px; background: rgba(0,0,0,0.35); padding: 3px 8px; border-radius: 4px; border: 1px solid var(--border);">
+                <span id="inspectSwatch" style="width: 12px; height: 12px; border-radius: 2px; border: 1px solid rgba(255,255,255,0.4); display: inline-block; background: #35d0c0;"></span>
+                <span id="inspectVal" style="color: var(--text); font-weight: 600;">Hover pixel</span>
+              </div>
             </div>
             <div class="maps">
               <div id="mapLeft" class="map"></div>
@@ -196,24 +200,38 @@
               <div class="probe-body">
                 <div class="probe-metrics">
                   <div class="probe-card main-reading">
-                    <div class="k">Exact Downscaled NO₂</div>
-                    <div id="probeCurrent" class="v">--</div>
+                    <div class="k">Exact Downscaled NO₂ (1km)</div>
+                    <div style="display:flex; align-items:center; justify-content:space-between; margin-top:2px;">
+                      <div id="probeCurrent" class="v">--</div>
+                      <div id="probeColorSwatch" style="width:20px; height:20px; border-radius:4px; border:1.5px solid #ffffff; box-shadow:0 0 8px rgba(0,0,0,0.6); flex-shrink:0;" title="Downscaled pixel color"></div>
+                    </div>
                     <div id="probeStatus" class="b">sub-pixel continuous model</div>
+                    <div id="probeColorLabel" style="font-size:10px; font-weight:600; color:#35d0c0; margin-top:2px;">--</div>
+                  </div>
+                  <div class="probe-card">
+                    <div class="k">Coarse Satellite NO₂ (25km)</div>
+                    <div style="display:flex; align-items:center; justify-content:space-between; margin-top:2px;">
+                      <div id="probeCoarseVal" class="v">--</div>
+                      <div id="probeCoarseColorSwatch" style="width:20px; height:20px; border-radius:4px; border:1.5px solid #ffffff; box-shadow:0 0 8px rgba(0,0,0,0.6); flex-shrink:0;" title="Coarse satellite pixel color"></div>
+                    </div>
+                    <div id="probeCoarseStatus" class="b">TROPOMI 0.25° coarse block</div>
+                    <div id="probeCoarseColorLabel" style="font-size:10px; font-weight:600; color:#ffb454; margin-top:2px;">--</div>
                   </div>
                   <div class="probe-card">
                     <div class="k">Exact Live API NO₂</div>
-                    <div id="probeApiNo2" class="v">--</div>
+                    <div style="display:flex; align-items:center; justify-content:space-between; margin-top:2px;">
+                      <div id="probeApiNo2" class="v">--</div>
+                      <div id="probeApiColorSwatch" style="width:20px; height:20px; border-radius:4px; border:1.5px solid #ffffff; box-shadow:0 0 8px rgba(0,0,0,0.6); flex-shrink:0;" title="Live API point color"></div>
+                    </div>
                     <div id="probeApiAgreement" class="b">Open-Meteo CAMS mesh</div>
+                    <div id="probeApiColorLabel" style="font-size:10px; font-weight:600; color:#22d3ee; margin-top:2px;">--</div>
                   </div>
                   <div class="probe-card">
-                    <div class="k">Period Mean / Range</div>
-                    <div id="probeMean" class="v">--</div>
-                    <div id="probeRange" class="b">min: -- · max: --</div>
-                  </div>
-                  <div class="probe-card">
-                    <div class="k">Physical Ground Station</div>
-                    <div id="probeStation" class="v">--</div>
+                    <div class="k">Physical Station / Site</div>
+                    <div id="probeStation" class="v" style="font-size:12.5px; font-weight:600; line-height:1.2; margin-top:2px;">--</div>
                     <div id="probeStationDist" class="b">Nearest physical monitor</div>
+                    <div id="probeMean" style="display:none;"></div>
+                    <div id="probeRange" style="font-size:10px; color:#8b98a9; margin-top:2px;">min: -- · max: --</div>
                   </div>
                 </div>
                 <div class="probe-chart-container">
