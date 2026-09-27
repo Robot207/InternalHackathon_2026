@@ -5,7 +5,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from .artifacts import latest_dir, read_meta
+from .artifacts import latest_dir, load_predictions, read_meta
 from .config import DATASET_DIR
 from .training import metrics
 
@@ -206,7 +206,7 @@ def evaluate_built_in_stations(preset: str = "mumbai") -> dict[str, Any]:
 
     import json
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
-    npz = np.load(latest_dir() / "predictions.npz", allow_pickle=False)
+    npz = load_predictions()
     pred = npz["pred"].astype(np.float64)
     base = npz["c_up"].astype(np.float64)
 
@@ -219,6 +219,13 @@ def evaluate_built_in_stations(preset: str = "mumbai") -> dict[str, Any]:
 
     t_mean_pred = np.nanmean(pred, axis=0)
     t_mean_base = np.nanmean(base, axis=0)
+    # Station figures are period means (the observed CPCB values are static
+    # averages), which is *not* the single hour the map may be showing — label
+    # it so the popup is not read as a value for "now".
+    _times = summary.get("times") or []
+    frame_label = (
+        f"period mean · {_times[0][:10]} → {_times[-1][:10]}" if _times else "period mean"
+    )
 
     matched_stations = []
     pred_vals, base_vals, obs_vals = [], [], []
@@ -280,6 +287,7 @@ def evaluate_built_in_stations(preset: str = "mumbai") -> dict[str, Any]:
         "n_stations": len(matched_stations),
         "metrics": summary_metrics,
         "stations": matched_stations,
+        "frame_label": frame_label,
         "source": "CPCB & MPCB CAAQMS (Continuous Ambient Air Quality Monitoring Stations)",
         "summary_text": (
             f"Validated on {len(matched_stations)} real Mumbai CAAQMS monitoring stations. "

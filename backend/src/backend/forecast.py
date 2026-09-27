@@ -177,8 +177,8 @@ def _baseline(summary: dict | None, preset: str) -> tuple[float, str]:
     npz = latest_dir() / "predictions.npz"
     if summary and npz.exists():
         try:
-            data = np.load(npz, allow_pickle=False)
-            last = np.asarray(data["pred"], dtype=float)[-1]
+            with np.load(npz, allow_pickle=False) as data:
+                last = np.asarray(data["pred"], dtype=float)[-1]
             finite = last[np.isfinite(last)]
             if finite.size:
                 src = f"mean of the latest analysis frame ({summary.get('preset')})"

@@ -201,6 +201,8 @@ export interface StationBenchmarkResponse {
   stations: StationBenchmarkItem[]
   source: string
   summary_text: string
+  /** Frame the model values refer to (station observations are static averages). */
+  frame_label?: string
 }
 
 export interface BenchmarkLeaderboardItem {
@@ -237,9 +239,20 @@ export interface PointInspectResult {
     /** "Curated POI" | "OpenStreetMap (Nominatim)" | "Offline city registry" | ... */
     source?: string
   }
+  /** Timeline frame these values belong to (matches what the map paints). */
+  frame?: {
+    /** Slider index, or null for the "period mean" frame. */
+    index: number | null
+    is_mean: boolean
+    /** "2026-09-20 20:00Z" or "period mean · 2026-09-20 → 2026-09-26". */
+    label: string
+    time: string | null
+  }
   current: {
     downscaled_no2: number | null
     baseline_no2: number | null
+    /** Value of the 0.25° block pixel drawn on the left "Coarse input" layer. */
+    baseline_block_no2?: number | null
     cloud_gap_repaired: boolean
     aqi: {
       category: string

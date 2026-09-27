@@ -15,6 +15,17 @@ def latest_dir() -> "object":
     return ARTIFACT_DIR / "latest"
 
 
+def load_predictions() -> dict:
+    """Read ``predictions.npz`` into memory and close it.
+
+    ``np.load`` on an ``.npz`` returns a lazily-read ``NpzFile`` that keeps the
+    zip handle open; every read left one behind (Windows then refuses the atomic
+    replace in ``_save_predictions``) and readers could see a half-read archive.
+    """
+    with np.load(latest_dir() / "predictions.npz", allow_pickle=False) as z:
+        return {name: z[name] for name in z.files}
+
+
 def has_predictions() -> bool:
     return (latest_dir() / "predictions.npz").exists()
 
@@ -36,7 +47,7 @@ def write_meta(meta: dict) -> None:
 
 
 def build_layers(summary: dict) -> dict:
-    data = np.load(latest_dir() / "predictions.npz", allow_pickle=False)
+    data = load_predictions()
     pred = data["pred"].astype(np.float64)
     ref = data["ref"].astype(np.float64)
     c_up = data["c_up"].astype(np.float64)
@@ -78,8 +89,8 @@ def build_layers(summary: dict) -> dict:
         "layers": layers,
         "ranges": ranges,
         "static": {
-            "elevation": _round(_static_elevation(summary)),
-            "road_density": _round(_static_roads(summary), 3),
+            "elevation": _round(_static_elevation(summary, data)),
+            "road_density": _round(_static_roads(summary, data), 3),
         },
     }
 
@@ -91,16 +102,31 @@ def _centers(field: np.ndarray, grid: dict) -> np.ndarray:
     return field[:, iy][:, :, ix]
 
 
-def _static_elevation(summary: dict) -> np.ndarray:
-    data = np.load(latest_dir() / "predictions.npz", allow_pickle=False)
-    if "elev" in data.files:
+def _block_value(frame: np.ndarray, grid: dict, r: int, c: int) -> float:
+    """Value of the 0.25° block pixel the fine cell (r, c) belongs to.
+
+    2-D sibling of ``block_upsample(_centers(...))`` used to build the drawn
+    layer: sample the frame at each coarse-cell centre, then look up the block
+    that (r, c) falls in.
+    """
+    iy = np.abs(grid["lats"][:, None] - grid["clats"][None, :]).argmin(axis=0)
+    ix = np.abs(grid["lons"][:, None] - grid["clons"][None, :]).argmin(axis=0)
+    centers = frame[iy][:, ix].ravel()
+    return float(centers[grid["block_idx"][r, c]])
+
+
+def _static_elevation(summary: dict, data: dict | None = None) -> np.ndarray:
+    if data is None:
+        data = load_predictions()
+    if "elev" in data:
         return data["elev"].astype(np.float64)
     return np.zeros((len(summary["lats"]), len(summary["lons"])), dtype=np.float64)
 
 
-def _static_roads(summary: dict) -> np.ndarray:
-    data = np.load(latest_dir() / "predictions.npz", allow_pickle=False)
-    if "roads" in data.files:
+def _static_roads(summary: dict, data: dict | None = None) -> np.ndarray:
+    if data is None:
+        data = load_predictions()
+    if "roads" in data:
         return data["roads"].astype(np.float64)
     return np.zeros((len(summary["lats"]), len(summary["lons"])), dtype=np.float64)
 
@@ -121,7 +147,7 @@ def write_layers(summary: dict) -> dict:
 def export_netcdf(summary: dict) -> "object":
     import xarray as xr
 
-    data = np.load(latest_dir() / "predictions.npz", allow_pickle=False)
+    data = load_predictions()
     pred = data["pred"].astype(np.float32)
     ref = data["ref"].astype(np.float32)
     c_up = data["c_up"].astype(np.float32)
@@ -133,8 +159,8 @@ def export_netcdf(summary: dict) -> "object":
     # summary times look like "2026-09-25T00:00:00Z"; numpy/xarray want the bare
     # ISO form. A naive ":00Z" -> ":00:00" swap produced "...T00:00:00:00".
     times = [t.replace("Z", "") for t in summary["times"]]
-    elev = _static_elevation(summary).astype(np.float32)
-    roads = _static_roads(summary).astype(np.float32)
+    elev = _static_elevation(summary, data).astype(np.float32)
+    roads = _static_roads(summary, data).astype(np.float32)
     meta = read_meta() or {}
     ds = xr.Dataset(
         data_vars={
@@ -184,7 +210,7 @@ def get_aqi_category(val: float) -> dict[str, str]:
 
 
 def export_geojson(summary: dict, time_idx: int = -1) -> "object":
-    data = np.load(latest_dir() / "predictions.npz", allow_pickle=False)
+    data = load_predictions()
     pred = data["pred"].astype(np.float64)
     c_up = data["c_up"].astype(np.float64)
     lats = np.asarray(summary["lats"], dtype=np.float64)
@@ -250,7 +276,7 @@ def export_geojson(summary: dict, time_idx: int = -1) -> "object":
 def export_csv(summary: dict) -> "object":
     import pandas as pd
 
-    data = np.load(latest_dir() / "predictions.npz", allow_pickle=False)
+    data = load_predictions()
     pred = data["pred"].astype(np.float64)
     c_up = data["c_up"].astype(np.float64)
     lats = np.asarray(summary["lats"], dtype=np.float64)
@@ -295,7 +321,7 @@ def export_geotiff(summary: dict, time_idx: int = -1) -> "object":
     import rasterio  # noqa: PLC0415
     from rasterio.transform import from_origin  # noqa: PLC0415
 
-    data = np.load(latest_dir() / "predictions.npz", allow_pickle=False)
+    data = load_predictions()
     pred = data["pred"].astype(np.float32)
     lats = np.asarray(summary["lats"], dtype=np.float64)
     lons = np.asarray(summary["lons"], dtype=np.float64)
@@ -342,19 +368,55 @@ def export_geotiff(summary: dict, time_idx: int = -1) -> "object":
     return path
 
 
-def inspect_point(lat: float, lon: float, summary: dict) -> dict:
+def _mean_frame(arr: np.ndarray) -> np.ndarray:
+    """Temporal mean of a cube, skipping missing hours (mirrors frameAt() in the UI)."""
+    with np.errstate(invalid="ignore"):
+        total = np.nansum(arr, axis=0)
+        count = np.isfinite(arr).sum(axis=0)
+    return np.where(count > 0, total / np.maximum(count, 1), np.nan)
+
+
+def inspect_point(lat: float, lon: float, summary: dict, time_idx: int | None = None) -> dict:
+    """Value of the *displayed* frame at (lat, lon).
+
+    ``time_idx`` is the timeline position the UI is painting: ``0..n-1`` is that
+    hour, ``n`` (or any negative index) is the "period mean" frame, and ``None``
+    means "latest hour". Reporting ``pred[-1]`` regardless of the timeline made
+    the panel disagree with the map by ~30 µg/m³ on the same click.
+    """
     from .places import resolve_place
 
-    data = np.load(latest_dir() / "predictions.npz", allow_pickle=False)
+    data = load_predictions()
     pred = data["pred"].astype(np.float64)
     c_up = data["c_up"].astype(np.float64)
     gap = data["gap_up"].astype(np.float64)
-    elev = _static_elevation(summary)
-    roads = _static_roads(summary)
+    elev = _static_elevation(summary, data)
+    roads = _static_roads(summary, data)
 
     lats = np.asarray(summary["lats"], dtype=float)
     lons = np.asarray(summary["lons"], dtype=float)
     times = summary.get("times", [])
+
+    t_len = pred.shape[0]
+    if time_idx is None:
+        t_curr, is_mean = max(t_len - 1, 0), False
+    elif 0 <= int(time_idx) < t_len:
+        t_curr, is_mean = int(time_idx), False
+    else:
+        t_curr, is_mean = 0, True
+    # Same frame the canvas draws: a single hour, or the mean over the period.
+    p_frame = _mean_frame(pred) if is_mean else pred[t_curr]
+    b_frame = _mean_frame(c_up) if is_mean else c_up[t_curr]
+    g_frame = _mean_frame(gap) if is_mean else gap[t_curr]
+
+    if is_mean:
+        frame_label = (
+            f"period mean · {times[0][:10]} → {times[-1][:10]}" if times else "period mean"
+        )
+    else:
+        frame_label = (
+            times[t_curr].replace("T", " ").replace(":00Z", "Z") if times else f"hour {t_curr}"
+        )
 
     ri = int(np.argmin(np.abs(lats - lat)))
     ci = int(np.argmin(np.abs(lons - lon)))
@@ -375,35 +437,59 @@ def inspect_point(lat: float, lon: float, summary: dict) -> dict:
     # Hyperlocal place name: curated POI -> OSM reverse geocode -> city centre.
     place = resolve_place(lat, lon)
 
-    # Current time (latest frame)
-    t_curr = pred.shape[0] - 1
-    p_curr = (
-        float(pred[t_curr, ri, ci])
-        if in_domain and np.isfinite(pred[t_curr, ri, ci])
-        else None
-    )
-    b_curr = (
-        float(c_up[t_curr, ri, ci])
-        if in_domain and np.isfinite(c_up[t_curr, ri, ci])
-        else None
-    )
-    g_curr = bool(in_domain and gap[t_curr, ri, ci] > 0.5)
+    # The displayed frame, exactly as the map paints it.
+    p_curr = float(p_frame[ri, ci]) if in_domain and np.isfinite(p_frame[ri, ci]) else None
+    b_curr = float(b_frame[ri, ci]) if in_domain and np.isfinite(b_frame[ri, ci]) else None
+    # Left pane "Coarse input (0.25°)" is the blocky layer: the coarse-cell value
+    # of the block this fine cell belongs to. It differs from the kriged/bilinear
+    # baseline used in the metrics, so report both instead of leaving the user
+    # to reconcile the left map's colour with this panel's number.
+    block_curr = None
+    if in_domain:
+        grid = make_grid(summary["bbox"], float(summary.get("fine_step") or 0.01))
+        block_val = _block_value(b_frame, grid, ri, ci)
+        if np.isfinite(block_val):
+            block_curr = float(block_val)
+    g_curr = bool(in_domain and g_frame[ri, ci] > 0.5)
 
     aqi_info = get_aqi_category(p_curr) if p_curr is not None else get_aqi_category(-1)
 
-    # 24-hour diurnal profile
-    t_window = min(24, pred.shape[0]) if in_domain else 0
-    series_times = times[-t_window:] if times and t_window else []
-    series_downscaled = (
-        [round(float(v), 2) if np.isfinite(v) else None for v in pred[-t_window:, ri, ci]]
-        if t_window
-        else []
-    )
-    series_baseline = (
-        [round(float(v), 2) if np.isfinite(v) else None for v in c_up[-t_window:, ri, ci]]
-        if t_window
-        else []
-    )
+    # 24-hour profile ending at the displayed hour. For the period-mean frame it
+    # is the diurnal cycle averaged over the period, so the sparkline belongs to
+    # the same frame as the headline number.
+    series_times: list = []
+    series_downscaled: list = []
+    series_baseline: list = []
+    if in_domain and times:
+        if is_mean:
+            hours = np.array([int(str(t)[11:13]) for t in times], dtype=int)
+            buckets: dict[int, list[float]] = {h: [] for h in range(24)}
+            buckets_b: dict[int, list[float]] = {h: [] for h in range(24)}
+            for i, h in enumerate(hours):
+                if 0 <= h < 24 and i < pred.shape[0]:
+                    v = pred[i, ri, ci]
+                    b = c_up[i, ri, ci]
+                    if np.isfinite(v):
+                        buckets[h].append(float(v))
+                    if np.isfinite(b):
+                        buckets_b[h].append(float(b))
+            for h in range(24):
+                series_times.append(f"{h:02d}:00Z")
+                series_downscaled.append(
+                    round(sum(buckets[h]) / len(buckets[h]), 2) if buckets[h] else None
+                )
+                series_baseline.append(
+                    round(sum(buckets_b[h]) / len(buckets_b[h]), 2) if buckets_b[h] else None
+                )
+        else:
+            start = max(0, t_curr - 23)
+            series_times = list(times[start : t_curr + 1])
+            series_downscaled = [
+                round(float(v), 2) if np.isfinite(v) else None for v in pred[start : t_curr + 1, ri, ci]
+            ]
+            series_baseline = [
+                round(float(v), 2) if np.isfinite(v) else None for v in c_up[start : t_curr + 1, ri, ci]
+            ]
 
     elev_val: float | None = None
     road_val: float | None = None
@@ -417,9 +503,17 @@ def inspect_point(lat: float, lon: float, summary: dict) -> dict:
         "in_domain": in_domain,
         "active_preset": summary.get("preset"),
         "nearest_landmark": place,
+        "frame": {
+            # Mirrors the timeline: null index == the "period mean" position.
+            "index": None if is_mean else t_curr,
+            "is_mean": is_mean,
+            "label": frame_label,
+            "time": None if is_mean else (times[t_curr] if t_curr < len(times) else None),
+        },
         "current": {
             "downscaled_no2": round(p_curr, 2) if p_curr is not None else None,
             "baseline_no2": round(b_curr, 2) if b_curr is not None else None,
+            "baseline_block_no2": round(block_curr, 2) if block_curr is not None else None,
             "cloud_gap_repaired": g_curr,
             "aqi": aqi_info,
         },

@@ -33,6 +33,11 @@ let hasModel = false
 let jobRunning = false
 let timeIdx = 0
 let playTimer: number | null = null
+/** Last point clicked on the map — re-read whenever the timeline frame changes. */
+let lastInspect: { lat: number; lon: number } | null = null
+/** Monotonic id so a slow response can't overwrite a newer frame's values. */
+let inspectSeq = 0
+let inspectTimer: number | null = null
 let leftPane: Pane
 let rightPane: Pane
 
@@ -186,8 +191,8 @@ function renderScatter(m: Meta | null): void {
   const svg = $('scatter')
   svg.innerHTML = ''
   if (!m || !layers) return
-  const pred = frameAt(layers.layers.prediction, -1)
-  const ref = frameAt(layers.layers.reference, -1)
+  const pred = frameAt(layers.layers.prediction, timeIdx)
+  const ref = frameAt(layers.layers.reference, timeIdx)
   if (!pred || !ref) return
   const pts: [number, number][] = []
   for (let r = 0; r < pred.length; r++) {
@@ -465,6 +470,8 @@ async function loadLayers(): Promise<boolean> {
     renderOverlays()
     updateTimeLabel()
     renderMetrics()
+    // The panel must describe the frame/city that is on screen now.
+    refreshInspect()
     // A new analysis changes the baseline the 72 h projection starts from.
     resetForecast()
     refreshForecast()
@@ -518,6 +525,16 @@ function setPresetDefaults(): void {
   renderOverlays()
   renderWarnings()
   updateButtons()
+  // The point inspector quotes numbers from the *previous* city's grid until it
+  // is re-read — say so instead of leaving yesterday's values under a new map.
+  if (!selectionMatchesResults()) {
+    lastInspect = null
+    if (inspectTimer !== null) window.clearTimeout(inspectTimer)
+    $('inspectorContent').innerHTML =
+      '<div class="hint">No results for this city yet — run <b>Apply model (transfer)</b> to inspect points here.</div>'
+  } else {
+    refreshInspect()
+  }
   // Page 2 must follow the same city: drop the previous projection, re-frame
   // its map (refreshForecast only fits once it has pixels) and refetch the met.
   resetForecast()
@@ -572,16 +589,33 @@ function frameSelectedCity(): void {
   }
 }
 
-async function inspectPointAt(lat: number, lon: number): Promise<void> {
+async function inspectPointAt(lat: number, lon: number, silent = false): Promise<void> {
   const el = $('inspectorContent')
-  el.innerHTML = `<div class="hint">Querying point (${lat.toFixed(4)}, ${lon.toFixed(4)})…</div>`
+  // Remember the point so the panel can be re-read when the timeline moves —
+  // otherwise it keeps reporting the frame that was on screen when clicked.
+  lastInspect = { lat, lon }
+  const seq = ++inspectSeq
+  if (!silent) el.innerHTML = `<div class="hint">Querying point (${lat.toFixed(4)}, ${lon.toFixed(4)})…</div>`
   try {
-    const res = await api.inspectPoint(lat, lon)
+    const res = await api.inspectPoint(lat, lon, timeIdx)
+    if (seq !== inspectSeq) return // a newer click/scrub superseded this one
     const cur = res.current
     const aqi = cur.aqi
     const lm = res.nearest_landmark
     const pVal = cur.downscaled_no2 !== null ? `${cur.downscaled_no2} µg/m³` : 'N/A'
     const bVal = cur.baseline_no2 !== null ? `${cur.baseline_no2} µg/m³` : 'N/A'
+    const frame = res.frame
+    const frameLabel = frame?.label ?? 'latest hour'
+    const isMean = frame?.is_mean ?? false
+    // The left pane's default "Coarse input (0.25°)" layer draws block pixels,
+    // which differ from the kriged baseline in the metrics — show it only while
+    // that layer is the one on screen.
+    const showBlock =
+      cur.baseline_block_no2 != null &&
+      ($('layerLeft') as HTMLSelectElement).value === 'coarse'
+    const blockLine = showBlock
+      ? `<div class="hint" style="margin-top:4px;">0.25° pixel on the left map: <b>${cur.baseline_block_no2} µg/m³</b></div>`
+      : ''
 
     const series = res.diurnal_24h.downscaled.filter((v): v is number => v !== null)
     const where =
@@ -607,7 +641,11 @@ async function inspectPointAt(lat: number, lon: number): Promise<void> {
         })
         .join(' ')
       sparklineSvg = `
-        <div style="font-size:10px; color:var(--dim); margin-top:6px;">24h Diurnal NO₂ Plume Trend:</div>
+        <div style="font-size:10px; color:var(--dim); margin-top:6px;">${
+          isMean
+            ? 'Mean diurnal NO₂ cycle (averaged over the period):'
+            : '24h Diurnal NO₂ Plume Trend:'
+        }</div>
         <svg class="sparkline-svg" viewBox="0 0 ${w} ${h}">
           <polyline fill="none" stroke="#35d0c0" stroke-width="2" points="${pts}" />
         </svg>
@@ -630,6 +668,8 @@ async function inspectPointAt(lat: number, lon: number): Promise<void> {
           <div class="val" style="color:#94a3b8;">${bVal}</div>
         </div>
       </div>
+      <div class="inspector-frame" title="The timeline frame these numbers belong to — the same one the map is painting.">⏱ at <b>${frameLabel}</b></div>
+      ${blockLine}
       <div style="margin-top:6px; display:flex; align-items:center; gap:8px;">
         <span class="aqi-pill" style="background:${aqi.color};">${aqi.category}</span>
         <span style="font-size:11px; color:#cbd5e1;">${aqi.description}</span>
@@ -643,8 +683,27 @@ async function inspectPointAt(lat: number, lon: number): Promise<void> {
       ${lm.source ? `<div class="hint" style="margin-top:4px;">Place: ${lm.source}</div>` : ''}
     `
   } catch (err) {
+    if (seq !== inspectSeq) return
     el.innerHTML = `<div class="info error">Inspection failed: ${err instanceof Error ? err.message : String(err)}</div>`
   }
+}
+
+/**
+ * Re-read the selected point for the frame that is on screen now.
+ *
+ * Scrubbing the timeline repaints the map but not this panel, so without this
+ * the panel would keep showing a different hour than the colours next to it.
+ */
+function refreshInspect(debounceMs = 0): void {
+  if (!lastInspect) return
+  const { lat, lon } = lastInspect
+  if (inspectTimer !== null) window.clearTimeout(inspectTimer)
+  const run = (): void => {
+    inspectTimer = null
+    void inspectPointAt(lat, lon, true)
+  }
+  if (debounceMs > 0) inspectTimer = window.setTimeout(run, debounceMs)
+  else run()
 }
 
 async function loadBenchmarkStations(validate = false): Promise<void> {
@@ -686,6 +745,9 @@ async function loadBenchmarkStations(validate = false): Promise<void> {
 
     const markers: MarkerData[] = []
     const stationList = validationData ? validationData.stations : data.stations
+    // Model figures are period means; without saying so they read as "right now"
+    // and disagree with whatever hour the timeline is showing.
+    const frameNote = validationData?.frame_label ?? 'period mean'
     for (const s of stationList) {
       const isEval = 'downscaled_no2' in s
       const html = `
@@ -694,7 +756,7 @@ async function loadBenchmarkStations(validate = false): Promise<void> {
           <span style="color:#64748b;">${s.type}</span><br>
           <hr style="margin:4px 0; border:none; border-top:1px solid #e2e8f0;" />
           <b>Observed Ground Truth:</b> ${s.observed_no2 || (s as { baseline_observed_no2?: number }).baseline_observed_no2} µg/m³<br>
-          ${isEval ? `<b>ML Downscaled:</b> ${(s as { downscaled_no2: number }).downscaled_no2} µg/m³<br><b>Coarse Satellite:</b> ${(s as { coarse_satellite_no2: number }).coarse_satellite_no2} µg/m³<br><span style="color:${(s as { downscale_error: number }).downscale_error < 0 ? '#16a34a' : '#ea580c'}; font-weight:bold;">Error: ${(s as { downscale_error: number }).downscale_error} µg/m³ (${(s as { error_reduction_pct: number }).error_reduction_pct}% reduction)</span><br>` : ''}
+          ${isEval ? `<b>ML Downscaled:</b> ${(s as { downscaled_no2: number }).downscaled_no2} µg/m³<br><b>Coarse Satellite:</b> ${(s as { coarse_satellite_no2: number }).coarse_satellite_no2} µg/m³<br><span style="color:${(s as { downscale_error: number }).downscale_error < 0 ? '#16a34a' : '#ea580c'}; font-weight:bold;">Error: ${(s as { downscale_error: number }).downscale_error} µg/m³ (${(s as { error_reduction_pct: number }).error_reduction_pct}% reduction)</span><br><i style="color:#64748b;">model value: ${frameNote} · observed: CPCB station average</i><br>` : ''}
           <i style="font-size:11px; color:#475569;">${s.notes}</i>
         </div>
       `
@@ -1004,7 +1066,11 @@ async function init(): Promise<void> {
     updateButtons()
     void refreshValidation(presetSel.value)
   })
-  ;($('layerLeft') as HTMLSelectElement).addEventListener('change', renderOverlays)
+  ;($('layerLeft') as HTMLSelectElement).addEventListener('change', () => {
+    renderOverlays()
+    // The "0.25° pixel" line only applies while the block layer is drawn.
+    refreshInspect()
+  })
   ;($('layerRight') as HTMLSelectElement).addEventListener('change', renderOverlays)
   ;($('gridCoarse') as HTMLInputElement).addEventListener('change', drawGridlines)
   ;($('gridFine') as HTMLInputElement).addEventListener('change', drawGridlines)
@@ -1014,6 +1080,10 @@ async function init(): Promise<void> {
     timeIdx = Number(slider.value)
     renderOverlays()
     updateTimeLabel()
+    // Keep the inspector *and* the model-vs-reference scatter on the frame the
+    // map just painted (debounced: `input` fires on every pixel of a scrub).
+    refreshInspect(180)
+    if (meta) renderMetrics()
   })
 
   $('btnPlay').addEventListener('click', () => {
@@ -1032,6 +1102,8 @@ async function init(): Promise<void> {
       slider.value = String(timeIdx)
       renderOverlays()
       updateTimeLabel()
+      refreshInspect()
+      if (meta) renderMetrics()
     }, 450)
   })
 

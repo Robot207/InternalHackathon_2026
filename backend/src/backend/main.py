@@ -307,12 +307,16 @@ def benchmark_models(split: str = "spatiotemporal", conserve: bool = True) -> di
 
 
 @app.get("/api/point/inspect")
-def inspect_point_endpoint(lat: float, lon: float) -> dict:
+def inspect_point_endpoint(lat: float, lon: float, t: int | None = None) -> dict:
+    """Value at (lat, lon) for the frame the UI is painting (``t`` = timeline index).
+
+    ``t`` omitted -> latest hour, ``t`` = n_times (or negative) -> period mean.
+    """
     summary = STATE.get("summary")
     if not summary or not artifacts.has_predictions():
         raise HTTPException(404, "No downscaling prediction available to inspect.")
     try:
-        return artifacts.inspect_point(lat, lon, summary)
+        return artifacts.inspect_point(lat, lon, summary, time_idx=t)
     except Exception as exc:
         raise HTTPException(400, f"Point inspection error: {exc}") from exc
 

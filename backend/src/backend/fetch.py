@@ -272,14 +272,16 @@ def fetch_road_density(
     cached: np.ndarray | None = None
     cached_ok = False
     if cache_file.exists():
-        data = np.load(cache_file, allow_pickle=True)
-        if data["density"].shape == (len(lats), len(lons)):
-            cached = data["density"]
-            cached_ok = bool(data["available"])
-            if cached_ok:
-                if progress:
-                    progress(0.78, "road density (cached)")
-                return cached.astype(np.float64), True, "cached"
+        # Close before np.savez_compressed below: an open NpzFile keeps the zip
+        # locked and the overwrite fails outright on Windows.
+        with np.load(cache_file, allow_pickle=True) as data:
+            if data["density"].shape == (len(lats), len(lons)):
+                cached = data["density"]
+                cached_ok = bool(data["available"])
+                if cached_ok:
+                    if progress:
+                        progress(0.78, "road density (cached)")
+                    return cached.astype(np.float64), True, "cached"
 
     local = osm_local.road_density(bbox, lats, lons, step, progress)
     if local is not None:

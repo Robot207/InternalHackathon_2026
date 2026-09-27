@@ -558,6 +558,17 @@ button:disabled {
   color: var(--accent);
 }
 
+/* Which timeline frame the two numbers above belong to — must match the map. */
+.inspector-frame {
+  font-size: 11px;
+  color: var(--dim);
+  margin: -4px 0 6px;
+}
+
+.inspector-frame b {
+  color: var(--accent);
+}
+
 .aqi-pill {
   display: inline-block;
   padding: 2px 7px;

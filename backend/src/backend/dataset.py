@@ -254,8 +254,10 @@ def load_dataset(key: str) -> dict:
     npz_path, _ = dataset_paths(key)
     if not npz_path.exists():
         raise FileNotFoundError(f"dataset not found: {key}")
-    data = np.load(npz_path, allow_pickle=True)
-    out = {k: data[k] for k in data.files}
+    # Materialise and close: an unclosed NpzFile keeps the zip locked, which on
+    # Windows blocks the rebuild of this very file on the next fetch.
+    with np.load(npz_path, allow_pickle=True) as data:
+        out = {k: data[k] for k in data.files}
     summary_path = npz_path.with_suffix(".summary.json")
     out["summary"] = json.loads(summary_path.read_text(encoding="utf-8")) if summary_path.exists() else {}
     return out

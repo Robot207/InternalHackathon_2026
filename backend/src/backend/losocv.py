@@ -25,7 +25,7 @@ import json
 
 import numpy as np
 
-from .artifacts import latest_dir, read_meta
+from .artifacts import latest_dir, load_predictions, read_meta
 from .config import DATASET_DIR
 from .stations import MUMBAI_STATIONS
 from .training import metrics
@@ -117,7 +117,7 @@ def run_loso(preset: str | None = None) -> dict:
             f"(need {MIN_STATIONS}) — reference RMSE shown"
         )
 
-    npz = np.load(latest_dir() / "predictions.npz", allow_pickle=False)
+    npz = load_predictions()
     pred = npz["pred"].astype(np.float64)
     base = npz["c_up"].astype(np.float64)
     lats = np.asarray(summary["lats"], dtype=float)

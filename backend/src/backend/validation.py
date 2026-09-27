@@ -5,7 +5,7 @@ import io
 import numpy as np
 import pandas as pd
 
-from .artifacts import latest_dir, read_meta
+from .artifacts import latest_dir, load_predictions, read_meta
 from .config import DATASET_DIR
 from .training import metrics
 
@@ -41,7 +41,7 @@ def validate_station_csv(content: bytes) -> dict:
     import json
 
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
-    npz = np.load(latest_dir() / "predictions.npz", allow_pickle=False)
+    npz = load_predictions()
     pred = npz["pred"].astype(np.float64)
     base = npz["c_up"].astype(np.float64)
 

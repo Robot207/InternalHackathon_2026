@@ -248,7 +248,7 @@ whenever a reference exists).
 | `POST /api/benchmark/models` | Multi-model arena leaderboard across all algorithms (job) |
 | `GET /api/jobs/{id}` | Job progress/stage polling |
 | `GET /api/result/meta`, `GET /api/result/layers` | Metrics/importances; grid layers for the map |
-| `GET /api/point/inspect?lat=&lon=` | Hyperlocal point inspector: AQI, 24 h curve, static features + a real place name **in any city** (curated POI → OSM reverse geocode → city centre); `in_domain=false` marks clicks outside the active grid |
+| `GET /api/point/inspect?lat=&lon=&t=` | Hyperlocal point inspector: AQI, 24 h curve, static features + a real place name **in any city** (curated POI → OSM reverse geocode → city centre); `in_domain=false` marks clicks outside the active grid. `t` is the **timeline frame being painted** (`0..n-1` hour `n`/negative = period mean, omitted = latest hour) and the response returns it as `frame.label`, so the panel can never quote a different hour than the map |
 | `GET /api/stations/benchmark` | Built-in CPCB CAAQMS stations & landmark pins (Mumbai) |
 | `POST /api/stations/benchmark/validate` | 1-Click evaluate model against Mumbai CPCB ground sensors |
 | `POST /api/validate/stations` | Custom CSV (`lon,lat,no2[,time]`) independent validation |
@@ -301,6 +301,7 @@ backend/
     artifacts.py       meta/layers/NetCDF export
     validation.py      station CSV validation
   scripts/smoke.py     headless end-to-end test
+  scripts/check_inspect.py  point-inspector vs painted-map consistency, every cached city
   scripts/preload_osm.py  prefetch a Geofabrik extract (`--list` for candidates)
   cache/, artifacts/   generated (git-ignored)
 frontend/
@@ -315,7 +316,7 @@ docs/                  pipeline & result screenshots
 
 - **Backend**: Python ≥ 3.13 managed by **uv only** (`uv sync`, `uv run …`) — never `pip install`. FastAPI app under `backend/src/backend/` with one module per pipeline stage (`src/` layout).
 - **Frontend**: **vanilla TypeScript + Vite** (no React or other framework), **Leaflet** for the synced dual maps, **OpenStreetMap** raster tiles as the keyless basemap (dark styling via CSS filter). The dev server proxies `/api` → `127.0.0.1:8000`.
-- **Checks**: `cd frontend && npm run build` is the quality gate (strict `tsc` + Vite bundle; no linter is configured). `uv run scripts/smoke.py <preset> <days>` verifies the ML pipeline end-to-end headlessly.
+- **Checks**: `cd frontend && npm run build` is the quality gate (strict `tsc` + Vite bundle; no linter is configured). `uv run scripts/smoke.py <preset> <days>` verifies the ML pipeline end-to-end headlessly; `uv run scripts/check_inspect.py` proves the point inspector quotes the same frame the map paints, for every cached city (writes to a temp dir, so it never disturbs `artifacts/latest`).
 - **Generated data** — `backend/cache/` and `backend/artifacts/` are git-ignored; always regenerate via Fetch/Train, never commit them.
 - **Regions** — the default preset is **Mumbai** (transfer mode: no local reference). London/Paris are the supervised-training benchmarks; train on one of those before Apply works elsewhere.
 

@@ -53,9 +53,16 @@ export const api = {
       `/api/benchmark/models?split=${encodeURIComponent(split)}&conserve=${conserve}`,
       {},
     ),
-  inspectPoint: (lat: number, lon: number) =>
+  /**
+   * Point inspector. `t` is the timeline frame the map is painting: 0..n-1 is
+   * that hour, `n` (the slider's end stop) is the period-mean frame. Omitting it
+   * falls back to the latest hour.
+   */
+  inspectPoint: (lat: number, lon: number, t?: number) =>
     request<import('./types').PointInspectResult>(
-      `/api/point/inspect?lat=${lat.toFixed(5)}&lon=${lon.toFixed(5)}`,
+      `/api/point/inspect?lat=${lat.toFixed(5)}&lon=${lon.toFixed(5)}${
+        t === undefined ? '' : `&t=${Math.round(t)}`
+      }`,
     ),
   cities: () => request<import('./types').CityListResponse>('/api/cities'),
   loso: (preset?: string) =>
