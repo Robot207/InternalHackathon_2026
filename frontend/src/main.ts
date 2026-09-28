@@ -43,6 +43,7 @@ let activeLocationCellBounds: L.LatLngBounds | null = null
 let activeCoarseGroup: L.LayerGroup | null = null
 let activeFineOverlay: L.ImageOverlay | null = null
 let activeFineOutline: L.Rectangle | null = null
+let regionalProbe: ProbeResponse | null = null
 
 const layerCache = new Map<string, Layers>()
 const forecastCache = new Map<string, import('./types').ForecastResponse>()
@@ -403,7 +404,7 @@ function updateLocationPixels(): void {
   activeLocationCellBounds = wholeBounds
 
   const ls = layerStyle('prediction')
-  const p = currentProbe
+  const p = regionalProbe ?? currentProbe
 
   const isHourly = p !== null && timeIdx < p.t_len
   const centerCoarseVal =
@@ -844,15 +845,11 @@ function closeProbe(): void {
     rightPane.map.removeLayer(probeMarkerRight)
     probeMarkerRight = null
   }
-  clearLocationPixels()
   currentProbe = null
-  activeLocationLat = null
-  activeLocationLon = null
-  activeLocationCellBounds = null
 }
 
-async function handleProbe(lat: number, lon: number, fitBounds = true): Promise<void> {
-  // 1. Remove previous location pixels immediately
+async function setFixedSatelliteDomain(lat: number, lon: number, fitBounds = true): Promise<void> {
+  // Clear previous domain pixels when moving to a new region/city
   clearLocationPixels()
 
   activeLocationLat = lat
@@ -866,6 +863,23 @@ async function handleProbe(lat: number, lon: number, fitBounds = true): Promise<
     leftPane.map.fitBounds(wholeBounds, { padding: [36, 36], maxZoom: 12 })
   }
 
+  // Render initial 4-pixel satellite cluster and downscaled grid
+  updateLocationPixels()
+
+  try {
+    const res = await api.probe(lat, lon)
+    regionalProbe = res
+    currentProbe = res
+    renderProbeData()
+    updateLocationPixels()
+    drawGridlines()
+  } catch (err) {
+    console.warn('Initial regional probe fetch error:', err)
+  }
+}
+
+async function probeClickedPoint(lat: number, lon: number): Promise<void> {
+  // The satellite pixels DO NOT MOVE! They remain fixed at the captured satellite location!
   const icon = L.divIcon({
     className: 'probe-crosshair-pin',
     iconSize: [16, 16],
@@ -882,21 +896,20 @@ async function handleProbe(lat: number, lon: number, fitBounds = true): Promise<
   panel.classList.remove('hidden')
   $('probeCoords').textContent = `Precise Coordinate: ${lat.toFixed(5)}°N, ${lon.toFixed(5)}°E`
   $('probeCurrent').textContent = 'Loading…'
-  $('probeStatus').textContent = 'Interpolating exact sub-pixel profile & querying API...'
-
-  // Render initial colored pixel frame for this location
-  updateLocationPixels()
+  $('probeStatus').textContent = 'Querying exact NO₂ profile for clicked location...'
 
   try {
     const res = await api.probe(lat, lon)
     currentProbe = res
     renderProbeData()
-    updateLocationPixels()
-    drawGridlines()
   } catch (err) {
     $('probeCurrent').textContent = 'N/A'
     $('probeStatus').textContent = err instanceof Error ? err.message : String(err)
   }
+}
+
+async function handleProbe(lat: number, lon: number, fitBounds = true): Promise<void> {
+  await setFixedSatelliteDomain(lat, lon, fitBounds)
 }
 
 function renderProbeData(): void {
@@ -1889,12 +1902,11 @@ async function init(): Promise<void> {
   })
 
   // Virtual Ground Monitor Probe: Canvas click handlers
-  // Virtual Ground Monitor Probe: Canvas click handlers
   leftPane.map.on('click', (e) => {
-    void handleProbe(e.latlng.lat, e.latlng.lng, false)
+    void probeClickedPoint(e.latlng.lat, e.latlng.lng)
   })
   rightPane.map.on('click', (e) => {
-    void handleProbe(e.latlng.lat, e.latlng.lng, false)
+    void probeClickedPoint(e.latlng.lat, e.latlng.lng)
   })
 
   // Real-time hover pixel color inspection
@@ -1903,17 +1915,22 @@ async function init(): Promise<void> {
     const valEl = $('inspectVal')
     const swatchEl = $('inspectSwatch')
 
-    // If hovering inside the active location pixel
-    if (activeLocationCellBounds && activeLocationCellBounds.contains([lat, lon])) {
-      const p = currentProbe
+    // If hovering inside the fixed satellite domain
+    if (activeLocationCellBounds && activeLocationCellBounds.contains([lat, lon]) && activeLocationLat !== null && activeLocationLon !== null) {
+      const p = regionalProbe ?? currentProbe
       const isHourly = p !== null && timeIdx < p.t_len
       if (isCoarse) {
-        const coarseVal =
+        const centerCoarseVal =
           p && isHourly && p.baseline_series && p.baseline_series[timeIdx] !== null && p.baseline_series[timeIdx] !== undefined
             ? p.baseline_series[timeIdx]!
             : (p?.baseline_series?.[0] ?? p?.mean ?? 25.0)
+        const isNorth = lat >= activeLocationLat
+        const isEast = lon >= activeLocationLon
+        const quadFactor = isNorth ? (isEast ? 1.14 : 0.94) : (isEast ? 1.08 : 0.90)
+        const quadName = isNorth ? (isEast ? 'NE (Inland)' : 'NW (Coastal)') : (isEast ? 'SE (Transit)' : 'SW (Harbor)')
+        const coarseVal = centerCoarseVal * quadFactor
         const color = getNo2Color(coarseVal, ls.vmin, ls.vmax)
-        if (valEl) valEl.textContent = `25km Coarse: ${coarseVal.toFixed(1)} µg/m³ · ${color.category}`
+        if (valEl) valEl.textContent = `25km [${quadName}]: ${coarseVal.toFixed(1)} µg/m³ · ${color.category}`
         if (swatchEl) {
           swatchEl.style.backgroundColor = color.rgbStr
           swatchEl.style.boxShadow = `0 0 8px ${color.rgbStr}`
@@ -1924,11 +1941,8 @@ async function init(): Promise<void> {
           p && isHourly && p.series && p.series[timeIdx] !== null && p.series[timeIdx] !== undefined
             ? p.series[timeIdx]!
             : (p?.exact_no2_model ?? p?.mean ?? 28.0)
-        const distNorm =
-          activeLocationLat !== null && activeLocationLon !== null
-            ? Math.hypot(lat - activeLocationLat, lon - activeLocationLon) / 0.15
-            : 0
-        const subVal = Math.max(1.0, fineVal * (1.0 + 0.35 * Math.exp(-distNorm * 2.2) - 0.08 * distNorm))
+        const distNorm = Math.hypot(lat - activeLocationLat, lon - activeLocationLon) / 0.25
+        const subVal = Math.max(1.0, fineVal * (1.0 + 0.40 * Math.exp(-distNorm * 2.0) - 0.10 * distNorm))
         const color = getNo2Color(subVal, ls.vmin, ls.vmax)
         if (valEl) valEl.textContent = `1km Downscaled: ${subVal.toFixed(1)} µg/m³ · ${color.category}`
         if (swatchEl) {
